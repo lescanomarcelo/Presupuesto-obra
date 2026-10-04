@@ -2,13 +2,15 @@
 
 Aplicación **de escritorio para Windows** que abre un plano (DXF / DWG / IFC),
 permite **medir de forma asistida** sobre él, **busca precios de materiales en
-internet**, y produce un **presupuesto completo** exportable a **CSV** para
+internet** —con fuentes propias de **Córdoba** más fuentes nacionales de
+referencia—, y produce un **presupuesto completo** exportable a **CSV** para
 importar en Excel o Google Sheets.
 
-> Revisión 4 — incorpora el relevamiento de fuentes de precios (§6), la
-> comparativa multi-fuente y la detección de valores raros (§7), y el panel de
-> fuentes con verificación, alta y baja de corralones (§8). Los scripts que
-> produjeron esos datos están en `tools/` y se pueden volver a correr.
+> Revisión 5 — zona confirmada: **Córdoba**. Incorpora el relevamiento de
+> fuentes (§6), la comparativa multi-fuente y los valores raros (§7), y el panel
+> de fuentes con los tres niveles, incluido el motor HTML, que pasa de prioridad
+> 4 a parte de la etapa 10 (§8). Los scripts que produjeron los datos están en
+> `tools/`.
 
 ---
 
@@ -600,19 +602,100 @@ porque ahí va la comparativa completa con una columna de link por fila. Lo abr�
 en Sheets, los links son clickeables, y verificás el presupuesto entero sin abrir
 la app.
 
-### Sobre el scraping HTML, ahora que son tres de cinco
+### El nivel HTML sí vale la pena, y va junto con el panel
 
-Tres de tus cinco corralones quedan en nivel HTML. Eso sube bastante la apuesta
-del adapter genérico, que en la revisión anterior era prioridad 4 y casi
-descartable. Dos consecuencias honestas:
+En la revisión anterior dejé el adapter HTML como prioridad 4 y pregunté si
+Edificor y Terralon eran "marginales". **Esa pregunta estaba mal planteada**, y
+los datos lo confirman: no son dos sitios, son ejemplos de una categoría —el
+corralón local con catálogo web—, y en Córdoba esa categoría es la mayoría.
 
-- **Se va a romper, y con frecuencia.** Un rediseño de sitio lo rompe. Por eso el
-  canario y la degradación a LINK son parte del diseño y no un extra.
-- **Los selectores van en configuración, no en código.** Cada fuente HTML guarda
-  sus selectores CSS (contenedor del producto, nombre, precio, link) como datos
-  editables. Así, cuando un sitio cambia, se arregla sin recompilar la app. En el
-  panel, el engranaje de una fuente HTML abre esos selectores con un botón de
-  prueba al lado.
+Tres números deciden:
+
+- **3 de 5 de tus corralones quedan en HTML.** Las fuentes con API pública que
+  encontré son casi todas de AMBA o cadenas grandes.
+- **Merlino cotiza 13% arriba de la banda nacional.** Las fuentes locales son las
+  que mandan en el número que firmás; las de referencia sirven para descubrir.
+- **Si el nivel HTML no existe, 3 de 5 de tus corralones quedan en LINK**, o sea
+  carga manual. El panel sin soporte HTML resuelve la mitad del problema.
+
+Conclusión: **se construye, y va dentro de la misma etapa que el panel** (§12,
+etapa 10), no en una etapa futura indefinida.
+
+### Pero no es "un adapter genérico": eso no existe
+
+Fui a mirar el HTML real de los tres, y la idea de un adapter con *presets por
+plataforma* no sobrevive al contacto con los datos.
+
+**La buena noticia: el precio está en el HTML del servidor.** Ninguno de los tres
+lo pinta con JavaScript. Eso significa `httpx` + `selectolax` y **no** un
+navegador headless tipo Playwright: muchísimo más simple, rápido y liviano para
+empaquetar en el `.exe`.
+
+**La mala: no hay marcado estándar que reusar.** Busqué datos estructurados en los
+tres y no hay nada aprovechable:
+
+| Sitio | Plataforma | JSON-LD `Product` | Marcado real del precio |
+|---|---|---|---|
+| Ferrocons | PrestaShop | ❌ (solo `Organization`, `WebSite`) | `<span class="product-price" content="38525.5">` |
+| Casa Manrique | WooCommerce | ❌ (solo `BreadcrumbList`) | `<div class="jet-listing-dynamic-field__content">` |
+| Terralon | Magento | ❌ (ningún bloque) | precios en un JSON embebido |
+
+Esperaba encontrar JSON-LD `Product` —el marcado que los sitios mantienen por
+SEO, y que por eso es estable— y **no está en ninguno**. Si estuviera, un solo
+extractor habría servido para todos. No es el caso.
+
+Peor: **Casa Manrique es WooCommerce pero su HTML no tiene marcado de
+WooCommerce.** El tema está hecho con Elementor + JetEngine, así que el precio
+vive en un `jet-listing-dynamic-field__content`, que es la misma clase genérica
+que usan el nombre, la descripción y cualquier otro campo. No se puede distinguir
+el precio por clase: hay que apoyarse en el patrón `$` o en la posición.
+
+O sea: **un selector set por sitio, no por plataforma.** Lo que cambia es la
+unidad de trabajo.
+
+### La trampa del "x m²", que encontré de casualidad y es cara
+
+En Ferrocons, un mismo elemento trae dos precios distintos:
+
+```html
+<span class="product-price" content="38525.5"> $ 15.985,69&nbsp;x m²
+```
+
+El atributo `content` dice **38525.5** (precio de la caja) y el texto visible dice
+**$15.985,69 por m²**. Son el mismo producto: un cerámico que se vende por caja y
+se publica por metro cuadrado.
+
+**Un scraper que lea el atributo y otro que lea el texto difieren 2,4x.** Casa
+Manrique tiene lo mismo (`$26.239,57 por m²`). Esto no es un detalle de
+implementación: es el error de unidad de §7 reapareciendo en el nivel HTML, y es
+del tipo que no se nota hasta que el presupuesto está mandado.
+
+Requisitos que salen de esto:
+
+- Toda fuente HTML obliga a **confirmar la unidad de venta** al vincular, no la
+  adivina. El diálogo muestra el número del atributo y el del texto, y vos elegís.
+- El **canario compara contra la banda de consenso de §7**, no solo contra el
+  valor anterior. Un salto de 2,4x en un refresco es casi seguro un cambio de
+  unidad, no un aumento, y tiene que frenar.
+
+### Cómo se reparte el trabajo, entonces
+
+Esto es lo que hace que la inversión valga: **separar infraestructura de carga de
+datos.**
+
+| | Qué es | Cuándo | Cuánto |
+|---|---|---|---|
+| **Infraestructura** | Motor de scraping, editor de selectores con botón de prueba, canario, degradación a LINK | **Etapa 10, una sola vez** | ~1-1,5 sem |
+| **Cada corralón nuevo** | Pegar la URL, elegir 4 selectores con el editor, confirmar la unidad | Cuando lo necesites | **15-30 min, sin programar** |
+
+**El adapter HTML no es una función que se termina: es infraestructura más carga
+de datos.** Pagás el motor una vez; después cada corralón de la lista larga cuesta
+minutos y lo podés hacer vos sin tocar código. Por eso conviene hacerlo bien y
+temprano, y por eso **no** conviene escribir un adapter a medida por sitio.
+
+Y la red de seguridad sigue siendo LINK: el día que un sitio se rediseñe y los
+selectores dejen de andar en medio de un presupuesto, un clic lo pasa a LINK y
+seguís trabajando.
 
 ---
 
@@ -727,8 +810,7 @@ trabajo de a ratos, no full-time.
 | 7 | **Precios: adapters VTEX + WooCommerce** | **Busca "cemento" en las 7 fuentes, muestra candidatos, vinculás, guarda precio con fecha** | **1-1,5 sem** |
 | 8 | Normalización y conversión | Factor de conversión por vínculo, extracción de peso/bulto del nombre, $/kg correcto | 4-5 d |
 | 9 | **Comparativa y atípicos** | **Banda de mediana+IQR por insumo, clasificación de fuera-de-banda, "dividir por pallet", fuente preferida** | **1 sem** |
-| 10 | **Panel de fuentes** | **Lista con estado y link, alta por URL con autodetección, verificar, pausar, quitar, degradar a LINK** | **1 sem** |
-| 10b | Fuentes nivel LINK y HTML | Carga manual con link y fecha; adapter HTML con selectores editables y botón de prueba | 1-1,5 sem |
+| 10 | **Panel de fuentes + niveles HTML y LINK** | **Lista con estado y link, alta por URL con autodetección, verificar, pausar, degradar. Motor de scraping con editor de selectores y botón de prueba. Carga manual con link y fecha** | **2-2,5 sem** |
 | 11 | Precios: actualización y salud | Refresco por SKU, canario, caché con TTL, rate limit, histórico, re-vinculación | 1 sem |
 | 12 | Coeficiente de impacto | GG, beneficio, impuestos con fecha de vigencia; presupuesto final | 4-5 d |
 | 13 | IFC | Abre un IFC de Revit y lee `BaseQuantities` directo, sin medir | 1-1,5 sem |
@@ -765,7 +847,8 @@ invertir en el resto.
 | **Decidir el nivel por la huella de plataforma** | **Alto** | Edificor es VTEX sin API; Casa Manrique es Woo con la REST apagada. El nivel se decide por **una búsqueda real que devuelva precio** |
 | **Falso negativo al verificar** | Medio | VTEX responde **206**, no 200: exigir 200 descartaba a Merlino. Aceptar cualquier 2xx y **mostrar siempre el motivo** del fallo |
 | **Marcar una fuente muerta por un timeout** | Medio | Reintento con backoff y contador de fallos consecutivos; *Degradada* antes de *Caída*; pausar, nunca borrar |
-| **Scraping HTML en 3 de 5 corralones propios** | **Alto** | Selectores como datos editables, canario que avisa, y degradación a LINK con un clic |
+| **Scraping HTML en 3 de 5 corralones propios** | **Alto** | Selectores como datos editables **por sitio** (no por plataforma: Casa Manrique es Woo con HTML de Elementor), canario, y degradación a LINK con un clic |
+| **Leer el precio "x m²" como precio de venta** | **Alto** | Ferrocons trae `content="38525.5"` y texto `$15.985,69 x m²` en el mismo tag: 2,4x de diferencia. Confirmar la unidad al vincular y que el canario compare contra la banda de §7 |
 | **Scraping de Sodimac se rompe** | Bajo | Es prioridad 4; con las fuentes de API pública ya no es necesaria |
 | Entidades HTML en nombres | Bajo | `&#8211;` en WooCommerce: `html.unescape()` al ingestar |
 | **Bloqueo por IP o reCAPTCHA** | Medio | Caché, rate limit, UA honesto, actualización manual y no automática. Easy ya tiene reCAPTCHA en el sitio público, aunque no en `/api/` |
@@ -784,16 +867,11 @@ invertir en el resto.
    mucho más que un catálogo genérico. Es lo que más acelera las etapas 4-5.
 2. **¿Qué jurisdicción?** Para la alícuota de ingresos brutos y si aplica IVA 10,5 %
    de obra de vivienda.
-3. **¿Trabajás en Córdoba?** Tres de los cinco corralones que nombraste son
-   cordobeses y Merlino está 13% arriba de la banda de AMBA. Si es así, las
-   fuentes de referencia nacionales sirven para descubrir insumos pero **no para
-   el precio**, y conviene que la zona por defecto sea Córdoba.
-4. **¿Hay más corralones que uses?** Pasame los sitios y los corro por
-   `tools/verificar_fuente.py`. Cada uno que resulte AUTOMÁTICA entra con costo
-   cero.
-5. **Edificor y Terralon: ¿les compras seguido?** Edificor quedó en nivel LINK y
-   Terralon en HTML frágil (Magento). Si son proveedores importantes para vos,
-   vale invertir en el adapter HTML; si son marginales, con LINK alcanza.
+3. **Zona: Córdoba** — confirmado. Es la zona por defecto. Las fuentes
+   nacionales quedan como referencia para descubrir insumos, no para el precio.
+4. **¿Hay más corralones cordobeses que uses?** Pasame los sitios y los corro por
+   `tools/verificar_fuente.py`. Con el motor HTML de la etapa 10 ya construido,
+   cada uno cuesta 15-30 min de configuración, no desarrollo.
 6. **¿Comprás por pallet o por unidad?** Define si la app tiene que priorizar la
    venta por volumen (13% más barata en cemento) o el precio unitario.
 7. **¿Unidades de tus planos?** Metros, centímetros o milímetros cambia los
