@@ -1,0 +1,35 @@
+codigo;nombre;tipo;unidad;desperdicio_sugerido_pct;multiplo_compra_sugerido;nota
+MAT-CEM-POR;Cemento portland CPC40;material;kg;3;25;Bolsa de 25 kg. Pallet de 80 bolsas
+MAT-CEM-ALB;Cemento de albañilería;material;kg;3;25;Bolsa de 25 kg
+MAT-CAL-HID;Cal hidratada;material;kg;3;25;Bolsa de 25 kg
+MAT-ARE-GRU;Arena gruesa;material;m3;5;1;Se vende por m3 o por camión de 6 m3
+MAT-ARE-FIN;Arena fina;material;m3;5;1;
+MAT-PIE-PAR;Piedra partida 10-30;material;m3;5;1;
+MAT-CAS-CAS;Cascote;material;m3;8;1;
+MAT-LAD-H12;Ladrillo hueco 12x18x33;material;u;5;1;Pallet habitual: consultar al proveedor
+MAT-LAD-H08;Ladrillo hueco 8x18x33;material;u;5;1;
+MAT-LAD-H18;Ladrillo hueco 18x18x33;material;u;5;1;
+MAT-LAD-COM;Ladrillo común;material;u;8;1;Mayor rotura por manipuleo
+MAT-HIE-006;Hierro aletado ADN420 diám. 6;material;kg;7;1;Despuntes. Barra de 12 m
+MAT-HIE-008;Hierro aletado ADN420 diám. 8;material;kg;7;1;Barra de 12 m
+MAT-HIE-010;Hierro aletado ADN420 diám. 10;material;kg;7;1;
+MAT-HIE-012;Hierro aletado ADN420 diám. 12;material;kg;7;1;
+MAT-ALA-REC;Alambre recocido;material;kg;5;1;
+MAT-HOR-H21;Hormigón elaborado H-21;material;m3;3;1;Mínimo de despacho habitual: 3 m3
+MAT-CER-PIS;Cerámico de piso;material;m2;10;1;Caja: m2 por caja según modelo. Mayor desperdicio con diagonales
+MAT-PEG-CER;Pegamento para cerámico;material;kg;5;30;Bolsa de 30 kg
+MAT-PAS-JUN;Pastina para juntas;material;kg;5;5;
+MAT-LAT-INT;Látex interior;material;l;8;20;Balde de 20 l o lata de 4 l
+MAT-LAT-EXT;Látex exterior;material;l;8;20;
+MAT-FIJ-SEL;Fijador sellador;material;l;5;20;
+MAT-MEM-4MM;Membrana asfáltica 4 mm;material;m2;15;10;Rollo de 10 m2. Alto desperdicio por solapes
+MO-OFI-ALB;Oficial albañil;mano_obra;h;0;1;
+MO-AYU-ALB;Ayudante albañil;mano_obra;h;0;1;
+MO-OFI-ESP;Oficial especializado;mano_obra;h;0;1;
+MO-PLO-MAT;Plomero matriculado;mano_obra;h;0;1;
+MO-ELE-MAT;Electricista matriculado;mano_obra;h;0;1;
+MO-GAS-MAT;Gasista matriculado;mano_obra;h;0;1;
+MO-PIN-TOR;Pintor;mano_obra;h;0;1;
+EQ-HOR-MEZ;Hormigonera (alquiler);equipo;dia;0;1;
+EQ-AND-TUB;Andamio tubular (alquiler);equipo;mes;0;1;
+EQ-BOM-HOR;Bombeo de hormigón;equipo;m3;0;1;

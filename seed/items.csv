@@ -1,0 +1,16 @@
+codigo;rubro;descripcion;unidad
+04.01;04;Mampostería de ladrillo hueco 12x18x33, con mortero de asiento;m2
+04.02;04;Mampostería de ladrillo hueco 18x18x33, con mortero de asiento;m2
+04.03;04;Mampostería de ladrillo común 0,15 m;m2
+03.01;03;Hormigón armado H-21 en vigas y columnas, elaborado;m3
+03.02;03;Armadura de hierro ADN420, elaborada y colocada;kg
+06.01;06;Contrapiso de hormigón de cascote, esp. 12 cm;m2
+06.02;06;Carpeta de concreto bajo piso, esp. 2 cm;m2
+07.01;07;Revoque grueso a la cal, interior, esp. 1,5 cm;m2
+07.02;07;Revoque fino a la cal, interior;m2
+07.03;07;Revoque grueso impermeable, exterior, esp. 2 cm;m2
+08.01;08;Piso cerámico esmaltado, colocado con pegamento;m2
+08.02;08;Zócalo cerámico, colocado;m
+05.01;05;Membrana asfáltica 4 mm, con imprimación;m2
+13.01;13;Pintura látex interior, fijador y dos manos;m2
+13.02;13;Pintura látex exterior, fijador y dos manos;m2

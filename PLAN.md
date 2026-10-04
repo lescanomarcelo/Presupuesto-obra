@@ -25,6 +25,10 @@ importar en Excel o Google Sheets.
 | **Precios** | **Scraping / API de retail online** | Módulo nuevo, es la parte más delicada del proyecto (§6) |
 | **Alcance** | **Materiales + mano de obra + equipos + gastos generales** | Presupuesto formal con coeficiente de impacto (§10) |
 | **Salida** | **CSV** (+ PDF opcional más adelante) | Importable en Excel y Google Sheets (§11) |
+| **Organización** | **Una carpeta por obra, visible en el explorador** | La app es el explorador del proyecto; los archivos también se abren a mano (§5) |
+| **Moneda** | **Pesos, con total convertido a USD** | Cotización con fecha y tipo de dólar elegible (§5) |
+| **Desperdicio** | **Por insumo, editable, con valores sugeridos** | Cargado en el catálogo base de `seed/` (§9) |
+| **Catálogo** | **Catálogo base armado, para que lo corrijas** | 14 rubros, 15 ítems, 34 insumos, 67 líneas de APU en `seed/` |
 
 ---
 
@@ -132,7 +136,80 @@ está mal.
 
 ---
 
-## 5. Modelo de datos (SQLite)
+## 5. Organización en disco y modelo de datos
+
+### Una carpeta por obra
+
+Elegiste que subir un plano cree un proyecto con su carpeta, y que la app sea un
+**explorador de ese proyecto**, pudiendo además entrar a la carpeta a mano. Es
+mejor que las dos opciones que te había ofrecido, y se parece a cómo funciona
+AutoCAD: el proyecto es una carpeta en tu disco, no una fila escondida en una
+base de datos.
+
+```
+Presupuestos/
+  2026-04 Casa Pérez/
+    proyecto.db              mediciones, asignaciones, presupuesto, precios usados
+    plano/
+      casa-perez.dxf         COPIA del plano original
+      casa-perez.dxf.sha256  para avisar si el original cambió
+    informes/
+      computo.csv
+      memoria-calculo.csv
+      materiales.csv
+      presupuesto.csv
+      precios.csv
+    ordenes/
+      orden-merlino.csv
+      orden-ferrocons.csv
+```
+
+Tres decisiones que vienen con esto:
+
+**El plano se copia, no se referencia.** Si la app guardara solo la ruta, mover o
+renombrar el archivo original rompería el proyecto meses después. Se copia a la
+carpeta y se guarda el hash del original, así puede avisarte *"el plano original
+cambió desde que computaste"* sin depender de que siga estando donde estaba.
+
+**Los informes son contenido del proyecto, no exportaciones.** Viven en la
+carpeta y se regeneran cuando el cómputo cambia. Eso hace que la carpeta sea
+útil incluso sin abrir la app: mandás la carpeta y el otro tiene todo.
+
+**El catálogo y los precios son globales, no del proyecto.** Van aparte, en la
+carpeta de datos de la app, porque los insumos, las fuentes y el histórico de
+precios se reusan entre obras:
+
+```
+%APPDATA%/PresupuestoObra/
+  catalogo.db     rubros, ítems, insumos, APU, desperdicio
+  precios.db      fuentes, SKU, vínculos insumo-SKU, histórico de precios
+  cotizaciones.db dólar por fecha y tipo
+```
+
+**Pero el presupuesto congela los precios que usó.** Esto es importante y es
+fácil equivocarse: si el presupuesto leyera `precios.db` al abrirse, un
+presupuesto de marzo mostraría precios de octubre y el total cambiaría solo. Así
+que `proyecto.db` guarda **copia del precio, la fuente, el link y la fecha/hora**
+de cada línea. `precios.db` sigue creciendo aparte, y re-valorizar es una acción
+explícita que crea una **versión nueva** del presupuesto.
+
+### Pesos con total en dólares
+
+Elegiste ver el total convertido. Eso es una tabla `cotizacion` con fecha, tipo
+(oficial / MEP / blue / CCL) y valor, más un tipo por defecto configurable.
+
+**Verificado:** `dolarapi.com/v1/dolares` responde sin autenticación y devuelve
+los cuatro tipos con su fecha de actualización. Lo probé y funciona.
+
+Dos reglas para que el número no engañe:
+
+- **El cálculo siempre es en pesos.** El dólar es presentación, no unidad de
+  cuenta. Convertir cada insumo y después sumar da distinto que sumar y después
+  convertir, y lo segundo es lo correcto.
+- **Todo total en USD lleva al lado la cotización y la fecha usadas.** Un
+  presupuesto en dólares sin decir a qué dólar no dice nada.
+
+### Modelo de datos (SQLite)
 
 **Lado plano/medición**
 - `proyecto` — nombre, comitente, ubicación, fecha
@@ -876,7 +953,8 @@ PDF con carátula queda como mejora posterior; no está en el camino crítico.
 
 ## 12. El flujo de uso completo
 
-1. **Abrir** el plano. La app lee `$INSUNITS` y propone las unidades.
+1. **Abrir** el plano. La app **crea el proyecto y su carpeta**, copia el plano
+   adentro, lee `$INSUNITS` y propone las unidades.
 2. **Calibrar escala**: clic en dos puntos de una cota conocida, escribir la medida
    real. Resuelve los planos mal escalados, que son la mitad.
 3. **Ver las capas**, con conteo de entidades. Apagar el ruido (cotas, ejes,
@@ -894,7 +972,9 @@ PDF con carátula queda como mejora posterior; no está en el camino crítico.
 8. **Cotizar**: la app busca precios, vos confirmás los vínculos nuevos. Los ya
    vinculados se actualizan solos por SKU.
 9. **Aplicar coeficiente de impacto** y ver la planilla por rubros con incidencias.
-10. **Exportar los cuatro CSV**.
+10. **Los informes se escriben en la carpeta del proyecto** (y se regeneran
+    cuando el cómputo cambia). Si querés, ves el total en dólares con la
+    cotización del día.
 11. **Guardar el perfil de capas.** La próxima vez que abras un plano del mismo
     estudio, los pasos 3-4 ya están resueltos. **Acá está el puente a la
     extracción automática**: con 5 o 6 perfiles buenos, "automático" es aplicar un
@@ -917,10 +997,11 @@ trabajo de a ratos, no full-time.
 | # | Etapa | Entregable verificable | Est. |
 |---|---|---|---|
 | 0 | Esqueleto | Repo, venv, Qt abre ventana, SQLite se crea, pytest corre | 2-3 d |
+| 0b | **Proyecto = carpeta** | **Abrir un DXF crea la carpeta con el plano copiado y su hash; la app lista y reabre proyectos** | **2-3 d** |
 | 1 | **Visor DXF** | **Abre un DXF real, pan/zoom, capas on/off, clic en entidad muestra capa/tipo/handle** | 1-1,5 sem |
 | 2 | Unidades y escala | Lee `$INSUNITS`, calibración por 2 puntos, mide una distancia correcta en metros | 3-4 d |
 | 3 | Motor de medición | Longitud, área, **volumen**, conteo, **por layout**; tests con DXF sintéticos de área conocida | 1-1,5 sem |
-| 4 | Catálogo y APU | ABM de rubros/ítems/insumos, coeficientes de rendimiento y **desperdicio por insumo** | 1 sem |
+| 4 | Catálogo y APU | **Importa `seed/` (ya hecho)** + ABM de rubros/ítems/insumos, rendimientos y desperdicio | 4-5 d |
 | 5 | Cómputo → ítems | Asignación capa→ítem, perfiles guardables, explosión a insumos | 1-1,5 sem |
 | 5b | **Desperdicio y redondeo** | **Cantidad neta / con desperdicio / a comprar, con múltiplo de compra** | **2-3 d** |
 | 6 | **Export CSV** | **Los cinco CSV (incluida memoria de cálculo), presets Excel es-AR y Google Sheets** | 4-5 d |
@@ -929,7 +1010,7 @@ trabajo de a ratos, no full-time.
 | 9 | **Comparativa y atípicos** | **Banda de mediana+IQR por insumo, clasificación de fuera-de-banda, "dividir por pallet", fuente preferida** | **1 sem** |
 | 10 | **Panel de fuentes + niveles HTML y LINK** | **Lista con estado y link, alta por URL con autodetección, verificar, pausar, degradar. Motor de scraping con editor de selectores y botón de prueba. Carga manual con link y fecha** | **2-2,5 sem** |
 | 11 | Precios: actualización y salud | Refresco por SKU, canario, caché con TTL, rate limit, histórico, re-vinculación | 1 sem |
-| 12 | Coeficiente de impacto | GG, beneficio, impuestos con fecha de vigencia; presupuesto final | 4-5 d |
+| 12 | Coeficiente de impacto y USD | GG, beneficio, impuestos con fecha de vigencia; total en dólares vía `dolarapi` | 5-6 d |
 | 13 | IFC | Abre un IFC de Revit y lee `BaseQuantities` directo, sin medir | 1-1,5 sem |
 | 14 | MercadoLibre | OAuth, manejo de token y 429 | 4-5 d |
 | 15 | DWG | Diálogo de conversión; ODA automático **si la licencia lo permite** | 2-4 d |
@@ -963,6 +1044,9 @@ invertir en el resto.
 | **Planos sin convención de capas** | **Alto** | Es la razón de elegir medición asistida |
 | **Olvidar el desperdicio** | **Alto** | Sin él el presupuesto sale corto siempre. `desperdicio` por insumo en `apu_detalle`, y columnas separadas en el informe (§9) |
 | **No redondear a unidad de compra** | **Alto** | No se compran 37,4 bolsas. `multiplo_compra` en `sku` y columna "a comprar" (§9) |
+| **Presupuesto que cambia solo** | **Alto** | Si leyera el histórico vivo, un presupuesto viejo mostraría precios de hoy. `proyecto.db` **congela** precio, fuente, link y fecha; re-valorizar crea una versión nueva (§5) |
+| **Convertir a USD insumo por insumo** | Medio | Da distinto que sumar en pesos y convertir el total. El cálculo es en pesos; el dólar es presentación (§5) |
+| **Perder el plano original** | Medio | Se copia a la carpeta del proyecto, no se referencia; se guarda el hash del original para avisar si cambió (§5) |
 | **Doble conteo entre layouts** | **Alto** | El mismo muro está en la planta y en el corte. `medicion` guarda el layout; por defecto solo modelspace (§9) |
 | **Polilíneas no cerradas** | **Alto** | Problema #1 al medir áreas: tolerancia de cierre configurable + herramienta de cerrar contorno + lista de revisión |
 | **Doble conteo de IVA** | **Alto** | Costo directo siempre sin IVA, usando `price_wo_taxes`; IVA una sola vez al final |
@@ -992,18 +1076,24 @@ invertir en el resto.
 
 ## 15. Lo que queda por definir
 
-1. **¿Qué rubros usás realmente?** Arrancar con tu lista y 15-20 ítems típicos vale
-   mucho más que un catálogo genérico. Es lo que más acelera las etapas 4-5.
-2. **¿Qué jurisdicción?** Para la alícuota de ingresos brutos y si aplica IVA 10,5 %
-   de obra de vivienda.
-3. **Zona: Córdoba** — confirmado. Es la zona por defecto. Las fuentes
+1. **Revisar el catálogo base de `seed/`.** Ya está armado: 14 rubros, 15 ítems,
+   34 insumos y 67 líneas de APU, con desperdicio y múltiplo de compra. **Lo que
+   falta es que lo corrijas**, sobre todo los coeficientes de rendimiento de mano
+   de obra, que son los que más varían. Y los rubros **09 sanitaria, 10 eléctrica,
+   11 gas, 12 carpinterías** están creados sin ítems a propósito: son los que más
+   dependen de tu forma de trabajar.
+2. **¿Qué tipo de dólar querés por defecto?** Oficial, MEP, blue o CCL.
+   `dolarapi` devuelve los cuatro; es un setting, pero conviene fijar el default.
+3. **¿Ingresos brutos de Córdoba y IVA?** Para la alícuota y si aplica el IVA de
+   10,5 % de obra de vivienda.
+4. **Zona: Córdoba** — confirmado. Es la zona por defecto. Las fuentes
    nacionales quedan como referencia para descubrir insumos, no para el precio.
-4. **¿Hay más corralones cordobeses que uses?** Pasame los sitios y los corro por
+5. **¿Hay más corralones cordobeses que uses?** Pasame los sitios y los corro por
    `tools/verificar_fuente.py`. Con el motor HTML de la etapa 10 ya construido,
    cada uno cuesta 15-30 min de configuración, no desarrollo.
-5. **¿Comprás por pallet o por unidad?** Define si la app tiene que priorizar la
+6. **¿Comprás por pallet o por unidad?** Define si la app tiene que priorizar la
    venta por volumen (~10% más barata en cemento) o el precio unitario.
-6. **¿Unidades de tus planos?** Metros, centímetros o milímetros cambia los
+7. **¿Unidades de tus planos?** Metros, centímetros o milímetros cambia los
    defaults, aunque la calibración lo resuelve igual.
 
 ---
