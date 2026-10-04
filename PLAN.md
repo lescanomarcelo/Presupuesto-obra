@@ -43,6 +43,7 @@ problema son Python-first y no tienen equivalente maduro en otro lenguaje.
 | Lectura DXF | `ezdxf` 1.4.x | Entidades, capas, bloques, textos, unidades |
 | **Visor del plano** | `ezdxf.addons.drawing` (`PyQtBackend`, `qtviewer.py`) | **Visor CAD con pan/zoom ya implementado** |
 | Lectura IFC | `ifcopenshell` 0.9.0 | **Probado:** cantidades, y kernel de geometría para calcularlas cuando faltan (§3) |
+| **Visor IFC** | `ifcopenshell.draw` + `QSvgWidget` | **Probado:** planta en SVG con `ifc:guid` por elemento. No hace falta 3D (§3) |
 | Geometría | `shapely` | Áreas, cierre de contornos, validación |
 | Base de datos | SQLite + SQLAlchemy | Local, un archivo, cero servidor |
 | **HTTP precios** | `httpx` | Async, timeouts y reintentos decentes |
@@ -86,18 +87,74 @@ exactamente el volumen neto, con error 0,0000 %. El área lateral baja de 10,40 
 > no se rompe nada: se calcula desde la geometría y se obtiene el mismo número,
 > exacto. No hay que pedirle a nadie que re-exporte.
 
-**La trampa está en elegir la función correcta** de `ifcopenshell.util.shape`:
+**La trampa está en elegir la función correcta** de `ifcopenshell.util.shape`.
+Probé un muro de 3,80 × 0,20 × 2,60 con ventana, **alineado y girado 90°**:
 
-| Función | Devuelve | Para qué |
-|---|---|---|
-| `get_volume` | 2,0800 m³ | Hormigón, mampostería por volumen |
-| **`get_side_area`** | **10,40 m²** | **Revoque, pintura. Descuenta huecos** |
-| `get_area` | **23,44 m²** | Superficie de las 6 caras. **Usarla para revoque sobrevalúa 2,25x** |
-| `get_footprint_area` | 0,80 m² | Huella en planta |
-| `get_footprint_perimeter` | poco confiable | Pasó de 8,40 a 11,20 solo por agregar una ventana **arriba** de la huella. No usarla |
+| Función | Alineado | Girado 90° | Veredicto |
+|---|---|---|---|
+| `get_volume` | 1,8160 m³ | 1,8160 m³ | ✅ exacta, descuenta huecos |
+| **`get_max_side_area`** | **8,560 m²** | **8,560 m²** | ✅ **la correcta. × 2 para revocar dos caras** |
+| `get_side_area` | 8,560 m² | **0,740 m²** | ❌ **depende de la orientación** |
+| `get_area` | 21,72 m² | 21,72 m² | ❌ las 6 caras: sobrevalúa 2,25x |
+| `get_footprint_perimeter` | 8,40 → 11,20 | — | ❌ cambió solo por poner una ventana **arriba** de la huella |
+
+> **Esto corrige lo que escribí en la revisión anterior**, donde recomendé
+> `get_side_area` para revoque. **Está mal**: mide las caras de una sola
+> dirección, así que en un muro girado 90° devuelve la cara del extremo —0,74 m²
+> en vez de 8,56— un error de **11x**, y en cualquier edificio la mitad de los
+> muros están girados.
+>
+> La receta correcta es **`2 × get_max_side_area`**: independiente del giro, y
+> descuenta los huecos. Da 17,120 m² contra 17,120 esperados, error 0,000 %, en
+> las dos orientaciones.
 
 Es el mismo tipo de error que el `content` vs `x m²` de Ferrocons (§8): la
 librería te da varios números parecidos y uno solo es el que querés.
+
+### El kernel de geometría puede matar el proceso
+
+Esto lo encontré de la peor manera: **un `SIGSEGV`**, no una excepción de Python.
+
+La causa resultó ser mía, y es un requisito de implementación: **el objeto `file`
+de ifcopenshell tiene que seguir vivo mientras se usen sus entidades.** Si una
+función devuelve solo el muro y deja que el `file` se recolecte, el kernel C++
+lee memoria liberada y **el proceso muere sin excepción atrapable.**
+
+```python
+def mal(...):  return muro          # el file se recolecta -> SIGSEGV
+def bien(...): return (f, muro)     # el file sobrevive
+```
+
+Dos requisitos que salen de esto:
+
+- **El lector de IFC retiene el `file`** mientras dure la sesión de cómputo, y
+  los tests cubren el caso.
+- **El procesamiento de geometría IFC corre en un subproceso**, no en el proceso
+  de Qt. Un `SIGSEGV` no se puede atrapar con `try/except`: si el kernel se cae
+  dentro de la app, se lleva el trabajo no guardado. En un subproceso se cae el
+  subproceso, la app muestra "no pude procesar este elemento" y sigue.
+
+### Cómo se le muestra el modelo al usuario, sin visor 3D
+
+Un visor 3D es caro y para computar no hace falta. Y hay algo mejor:
+**`ifcopenshell.draw` genera la planta en SVG**, usando shapely, que ya está en
+el stack.
+
+Lo probé con un modelo de cuatro muros y un nivel: salen **13 `<path>`**, y lo
+importante es que cada uno lleva **`ifc:guid` e `ifc:name`**:
+
+```
+nombres recuperables del SVG: ['Planta baja', 'Muro Sur', 'Muro Norte', 'Muro Oeste', 'Muro Este']
+```
+
+**Eso significa que clickear una forma en el SVG devuelve el objeto IFC.** Con
+`QSvgWidget` se resuelve el visor IFC entero: planta 2D navegable, selección por
+clic, y resaltado del elemento que compone cada cantidad —lo mismo que el visor
+DXF, sin escribir un motor 3D.
+
+Un detalle: `auto_floorplan` necesita que el modelo tenga `IfcBuildingStorey`. Un
+IFC de Revit siempre los tiene; mi primer modelo de prueba no, y el SVG salía
+vacío sin dar error.
 
 ### DWG — prioridad 3, con un problema de licencia
 DWG es cerrado; `ezdxf` **no lo lee**. Opciones:
@@ -131,8 +188,10 @@ app/
     panel_cotizacion.py    candidatos de precio, confirmación manual
     panel_presupuesto.py   planilla por rubros + coeficiente de impacto
   readers/               -> devuelven un "Documento" normalizado
-    dxf_reader.py
-    ifc_reader.py
+    base.py                la abstraccion comun: Documento + Elemento medible
+    dxf_reader.py          geometria a interpretar: capa -> item
+    ifc_reader.py          objetos tipados: clase+tipo -> item. Retiene el `file`
+    ifc_geom.py            geometria IFC EN SUBPROCESO (el kernel puede hacer SIGSEGV)
     dwg_reader.py          (convierte y delega en dxf_reader)
   measure/               motor de medición, SIN Qt ni SQL
     units.py               $INSUNITS + calibración manual de escala
@@ -248,10 +307,19 @@ Dos reglas para que el número no engañe:
 - `proyecto` — nombre, comitente, ubicación, fecha
 - `plano` — archivo, hash SHA-256, formato, unidades, factor de escala
 - `perfil_capas` — conjunto de reglas **reutilizable entre planos**
-- `regla` — capa o patrón → tipo de medición → ítem → factor
-- `medicion` — plano, **layout**, handle de la entidad, tipo, valor crudo, valor
-  final, ítem. El **layout** es obligatorio: sin él se mide dos veces el mismo
-  muro en la planta y en el corte (§9)
+- `perfil_asignacion` — reemplaza al "perfil de capas": vale para los dos
+  lectores
+- `regla` — **llave según el origen**: capa o patrón (DXF) **o** clase IFC +
+  tipo (IFC) → tipo de medición → ítem → factor
+- `medicion` — plano, **contenedor** (layout en DXF, nivel/storey en IFC),
+  **identificador del elemento** (handle en DXF, **GlobalId** en IFC), tipo, valor
+  crudo, valor final, ítem, **y de dónde salió la cantidad** (leída de
+  `BaseQuantities` o calculada por geometría). El contenedor es obligatorio: sin
+  él se mide dos veces el mismo muro en la planta y en el corte (§9)
+
+El **`GlobalId` del IFC es mejor identificador que el handle del DXF**: es único
+globalmente y estable entre exportaciones, así que comparar dos versiones de un
+modelo (§9) es más confiable del lado IFC.
 
 Guardar el **handle** permite re-abrir el plano y que las mediciones sigan
 apuntando a las líneas correctas. Guardar el **hash** permite avisar "este plano
@@ -1104,20 +1172,21 @@ trabajo de a ratos, no full-time.
 | 4 | Catálogo y APU | **Importa `seed/` (ya hecho)** + ABM de rubros/ítems/insumos, rendimientos y desperdicio | 4-5 d |
 | 5 | Cómputo → ítems | Asignación capa→ítem, perfiles guardables, explosión a insumos | 1-1,5 sem |
 | 5b | **Desperdicio y redondeo** | **Cantidad neta / con desperdicio / a comprar, con múltiplo de compra** | **2-3 d** |
-| 6 | **Export CSV** | **Los cinco CSV (incluida memoria de cálculo), presets Excel es-AR y Google Sheets** | 4-5 d |
-| 7 | **Precios: adapters VTEX + WooCommerce** | **Busca "cemento" en las 7 fuentes, muestra candidatos, vinculás, guarda precio con fecha** | **1-1,5 sem** |
-| 8 | Normalización y conversión | Factor de conversión por vínculo, extracción de peso/bulto del nombre, $/kg correcto | 4-5 d |
-| 9 | **Comparativa y atípicos** | **Banda de mediana+IQR por insumo, clasificación de fuera-de-banda, "dividir por pallet", fuente preferida** | **1 sem** |
-| 10 | **Panel de fuentes + niveles HTML y LINK** | **Lista con estado y link, alta por URL con autodetección, verificar, pausar, degradar. Motor de scraping con editor de selectores y botón de prueba. Carga manual con link y fecha** | **2-2,5 sem** |
-| 11 | Precios: actualización y salud | Refresco por SKU, canario, caché con TTL, rate limit, histórico, re-vinculación | 1 sem |
-| 12 | Coeficiente de impacto y USD | GG, beneficio, impuestos con fecha de vigencia; total en dólares vía `dolarapi` | 5-6 d |
-| 13 | IFC | Abre un IFC real, lee `BaseQuantities` y cae a geometría cuando faltan (ya probado en `tools/prueba_ifc.py`) | 1 sem |
-| 14 | MercadoLibre | OAuth, manejo de token y 429 | 4-5 d |
-| 15 | DWG | Diálogo de conversión; ODA automático **si la licencia lo permite** | 2-4 d |
-| 16 | **Instalable** | **`.exe` + instalador Inno Setup que corre en una PC sin Python** | 4-6 d |
-| 17 | Orden de compra por proveedor | Agrupa `materiales.csv` por `fuente_preferida`; lista por corralón | 2-3 d |
-| 18 | Plantillas de presupuesto | Rubros e ítems precargados por tipología de obra | 3-4 d |
-| 19 | Comparar versiones del plano | Diff por handle entre dos DXF: agregadas, borradas, modificadas | 1-1,5 sem |
+| 6 | **IFC — el segundo lector** | **Abre un IFC real, lista objetos por nivel, lee `BaseQuantities` y cae a geometría en subproceso. Visor de planta en SVG con selección por clic** | **1,5-2 sem** |
+| 7 | **Export CSV** | **Los cinco CSV (incluida memoria de cálculo), presets Excel es-AR y Google Sheets** | 4-5 d |
+| 8 | **Precios: adapters VTEX + WooCommerce** | **Busca "cemento" en las 7 fuentes, muestra candidatos, vinculás, guarda precio con fecha** | **1-1,5 sem** |
+| 9 | Normalización y conversión | Factor de conversión por vínculo, extracción de peso/bulto del nombre, $/kg correcto | 4-5 d |
+| 10 | **Comparativa y atípicos** | **Banda de mediana+IQR por insumo, clasificación de fuera-de-banda, "dividir por pallet", fuente preferida** | **1 sem** |
+| 11 | **Panel de fuentes + niveles HTML y LINK** | **Lista con estado y link, alta por URL con autodetección, verificar, pausar, degradar. Motor de scraping con editor de selectores y botón de prueba. Carga manual con link y fecha** | **2-2,5 sem** |
+| 12 | Precios: actualización y salud | Refresco por SKU, canario, caché con TTL, rate limit, histórico, re-vinculación | 1 sem |
+| 13 | Coeficiente de impacto y USD | GG, beneficio, impuestos con fecha de vigencia; total en dólares vía `dolarapi` | 5-6 d |
+| 14 | IFC | Abre un IFC real, lee `BaseQuantities` y cae a geometría cuando faltan (ya probado en `tools/prueba_ifc.py`) | 1 sem |
+| 15 | MercadoLibre | OAuth, manejo de token y 429 | 4-5 d |
+| 16 | DWG | Diálogo de conversión; ODA automático **si la licencia lo permite** | 2-4 d |
+| 17 | **Instalable** | **`.exe` + instalador Inno Setup que corre en una PC sin Python** | 4-6 d |
+| 18 | Orden de compra por proveedor | Agrupa `materiales.csv` por `fuente_preferida`; lista por corralón | 2-3 d |
+| 19 | Plantillas de presupuesto | Rubros e ítems precargados por tipología de obra | 3-4 d |
+| 20 | Comparar versiones del plano | Diff por handle entre dos DXF: agregadas, borradas, modificadas | 1-1,5 sem |
 
 **Total aproximado hasta la etapa 16 (producto completo e instalable): 18-24
 semanas de trabajo de a ratos.** Las etapas 0-6 son ~5-6 semanas y ya dejan una
@@ -1125,15 +1194,29 @@ herramienta usable: cómputo con desperdicio y redondeo, exportado a CSV, con
 precios cargados a mano. Todo el módulo de precios (7-11) son otras ~6-7 semanas
 y es la mitad del proyecto en esfuerzo y la mayor parte del riesgo.
 
-**Por qué el CSV (etapa 6) va antes que los precios (etapa 7):** apenas tengas
+**Por qué el IFC subió de la etapa 13 a la 6.** Dijiste que los dos formatos van
+a ser importantes, y eso cambia el orden por una razón de arquitectura, no de
+preferencia: **la abstracción común se prueba cuando entra el segundo lector.**
+Si construyo trece etapas sobre un modelo pensado para DXF y recién después
+agrego IFC, hay que refactorizar todo lo de arriba. Entrando en la etapa 6, el
+`Documento` normalizado queda ejercitado por los dos caminos antes de que se
+apoye nada más encima.
+
+Y hay un argumento de esfuerzo: **el camino IFC es más barato que el DXF**. No
+necesita calibración de escala, ni adivinar capas, ni cerrar polilíneas, ni motor
+3D —la planta sale en SVG—, y las cantidades son exactas. Casi todo lo caro de la
+etapa 6 es el lector y la asignación clase→ítem.
+
+**Por qué el CSV (etapa 7) va antes que los precios (etapa 8):** apenas tengas
 cómputo y catálogo, un CSV de cantidades ya es útil por sí solo —lo abrís en
 Sheets y le ponés precios a mano. Te deja una herramienta usable **seis etapas
 antes** de que el módulo de precios esté listo, y el módulo de precios es el que
 más riesgo tiene de estirarse.
 
-**La etapa 1 sigue siendo el hito que vale.** Un visor que abre tu plano y te deja
-apagar capas te dice si todo el enfoque funciona con tus archivos reales, antes de
-invertir en el resto.
+**La etapa 1 sigue siendo el hito que vale**, y ahora por un motivo extra: de los
+dos lectores, el DXF es el incierto. Un visor que abre tu plano y te deja apagar
+capas te dice si el enfoque funciona con tus archivos reales. Del lado IFC, ese
+riesgo ya está medido.
 
 ---
 
@@ -1172,7 +1255,9 @@ invertir en el resto.
 | **MercadoLibre cambia el OAuth** | Medio | Adapter aislado; si se cae, el resto de las fuentes sigue |
 | **Licencia de ODA** para DWG | Medio | v1 pide DXF; conversión automática es opcional |
 | **CSV mal interpretado por Excel** | Medio | Separador `;` + UTF-8 con BOM, presets por destino |
-| **Usar `get_area` para revoque en IFC** | **Alto** | Devuelve la superficie de las 6 caras: 23,44 m² contra 10,40 reales, **2,25x de más**. Usar `get_side_area` (§3) |
+| **Usar `get_side_area` para revoque en IFC** | **Alto** | Depende de la orientación: en un muro girado 90° da 0,74 m² contra 8,56 reales, **error de 11x**, y la mitad de los muros están girados. Usar `2 × get_max_side_area` (§3) |
+| **Usar `get_area` para revoque en IFC** | **Alto** | Devuelve la superficie de las 6 caras: 23,44 m² contra 10,40 reales, **2,25x de más** (§3) |
+| **`SIGSEGV` del kernel de geometría** | **Alto** | Si el objeto `file` se recolecta mientras se usan sus entidades, el proceso muere **sin excepción atrapable**. Retener el `file`, y correr la geometría IFC **en subproceso** (§3) |
 | `get_footprint_perimeter` de IFC | Medio | Cambió de 8,40 a 11,20 solo por agregar una ventana arriba de la huella. No usarla para zócalos ni perímetros |
 | IFC sin `BaseQuantities` | **Bajo** (era alto) | **Probado:** se calcula desde la geometría con error 0,0000 %, y descuenta huecos. No bloquea |
 | Entidades ACIS / 3D | Bajo | `ezdxf` no las renderiza (limitación documentada); no son cómputo 2D |
@@ -1193,14 +1278,19 @@ invertir en el resto.
 3. **Alícuotas: carga manual, editables por obra** — definido. Sin tabla
    automática. Queda pendiente, para más adelante y sin bloquear nada, una tabla
    de ingresos brutos por jurisdicción.
-4. **Zona: Córdoba** — confirmado. Es la zona por defecto. Las fuentes
+4. **Los dos formatos pesan igual** — confirmado. IFC pasó a la etapa 6 para que
+   la abstracción se pruebe con los dos lectores antes de construir encima.
+   Pendiente menor: cuando tengas un IFC real de Revit, pasarlo por
+   `tools/prueba_ifc.py` adaptado, para confirmar el comportamiento a escala
+   (cientos de elementos, `IfcBuildingElementProxy`, clases heredadas).
+5. **Zona: Córdoba** — confirmado. Es la zona por defecto. Las fuentes
    nacionales quedan como referencia para descubrir insumos, no para el precio.
-5. **¿Hay más corralones cordobeses que uses?** Pasame los sitios y los corro por
+6. **¿Hay más corralones cordobeses que uses?** Pasame los sitios y los corro por
    `tools/verificar_fuente.py`. Con el motor HTML de la etapa 10 ya construido,
    cada uno cuesta 15-30 min de configuración, no desarrollo.
-6. **¿Comprás por pallet o por unidad?** Define si la app tiene que priorizar la
+7. **¿Comprás por pallet o por unidad?** Define si la app tiene que priorizar la
    venta por volumen (~10% más barata en cemento) o el precio unitario.
-7. **¿Unidades de tus planos?** Metros, centímetros o milímetros cambia los
+8. **¿Unidades de tus planos?** Metros, centímetros o milímetros cambia los
    defaults, aunque la calibración lo resuelve igual.
 
 ---
@@ -1265,6 +1355,7 @@ vuelva y para saber qué está verificado y qué era suposición.
 | 8 | **Conclusión apresurada: "Terralon no tiene web"** — probé `terralon.com.ar` y `www.terralon.com` (este último está en venta) pero **no** `www.terralon.com.ar`, que es el sitio real, en Magento | Ídem | ✅ corregido; el verificador ahora prueba con y sin `www.` |
 | 9 | **Faltaba el desperdicio** — ninguna versión anterior lo tenía. El presupuesto salía corto siempre | Revisión de apps del rubro (§9) | ✅ agregado al modelo y al roadmap |
 | 10 | **Faltaba el redondeo a unidad de compra** — se calculaban 37,4 bolsas de cemento | Ídem | ✅ agregado |
+| 14 | **`get_side_area` recomendado para revoque en IFC** (revisión anterior, mismo día) — depende de la orientación: en un muro girado 90° devuelve 0,74 m² contra 8,56 reales, **11x de error**. La correcta es `2 × get_max_side_area` | Prueba con el muro alineado y girado | ✅ corregido |
 | 13 | **Riesgo de IFC sobrevalorado** — marqué "IFC sin BaseQuantities" como el supuesto más grande del plan. Probado, el cálculo por geometría da error **0,0000 %** y descuenta huecos: el riesgo es bajo | `tools/prueba_ifc.py` | ✅ reclasificado a riesgo bajo |
 | 12 | **`price_wo_taxes` recomendado como costo neto** (revisiones 2 a 5) — deriva de `ListPrice`, así que en un producto en oferta sobrevalúa el neto hasta **43 %**. Verificado sobre 25 productos de Easy | Verificación de la alícuota por fuente | ✅ corregido: neto = `Price` / (1 + IVA) |
 | 11 | **Faltaba el layout en `medicion`** — el plan trataba el DXF como si hubiera un solo lugar donde medir, habilitando doble conteo entre planta y corte | Ídem | ✅ agregado |
@@ -1287,6 +1378,12 @@ Conviene tener claro el límite, porque todo el módulo de precios se apoya en e
 - Que `ifcopenshell` 0.9.0 instala desde pip con el kernel de geometría incluido,
   lee `Qto_WallBaseQuantities` y, cuando faltan, calcula el volumen **exacto**
   desde el sólido, **descontando los huecos de ventanas** (`tools/prueba_ifc.py`)
+- Que `get_max_side_area` es independiente de la orientación y `get_side_area`
+  no, medido con el mismo muro alineado y girado 90°
+- Que el kernel produce `SIGSEGV` si se libera el objeto `file`, y que retenerlo
+  lo evita
+- Que `ifcopenshell.draw` genera la planta en SVG con `ifc:guid` e `ifc:name` por
+  elemento, lo que permite clic → objeto IFC
 
 **No verificado, es suposición razonable:**
 - Que un IFC **real de Revit**, con cientos de elementos, clases heredadas y

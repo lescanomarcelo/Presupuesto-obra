@@ -14,9 +14,18 @@ sin -- y un tercero con un hueco de ventana, y prueba los dos caminos de lectura
 Resultado medido: el PLAN B da el volumen EXACTO (error 0,0000%), con y sin
 huecos. O sea que la ausencia de BaseQuantities no es un bloqueante.
 
-OJO con elegir la funcion correcta de ifcopenshell.util.shape:
-  get_area       superficie TOTAL de las 6 caras   -> NO sirve para revoque
-  get_side_area  area de las caras verticales      -> SI, y descuenta el hueco
+DOS TRAMPAS que esta prueba documenta, las dos encontradas midiendo:
+
+1. Elegir la funcion correcta de ifcopenshell.util.shape:
+     get_area           superficie de las 6 caras    -> NO, sobrevalua 2,25x
+     get_side_area      depende de la ORIENTACION    -> NO, da 0,74 en un muro girado
+     get_max_side_area  la cara mas grande           -> SI. x2 para revocar dos caras
+   get_max_side_area es independiente del giro y descuenta los huecos.
+
+2. El objeto `file` tiene que seguir vivo mientras se usen sus entidades.
+   Si se recolecta, el kernel C++ lee memoria liberada y el proceso muere con
+   SIGSEGV, sin excepcion de Python que se pueda atrapar. Por eso construir()
+   devuelve (file, muro) y no solo el muro.
 """
 import ifcopenshell
 import ifcopenshell.geom
@@ -49,10 +58,13 @@ def _extruido(mk, dx, dy, dz, px, py, pz):
               ExtrudedDirection=mk("IfcDirection", DirectionRatios=(0., 0., 1.)), Depth=dz)
 
 
-def construir(con_cantidades=False, con_hueco=False):
+def construir(con_cantidades=False, con_hueco=False, rotado=False):
+    """Devuelve (file, muro). El file SE TIENE QUE RETENER: si se recolecta
+    mientras el muro sigue en uso, el kernel de geometria produce un SIGSEGV."""
     f = ifcopenshell.file(schema="IFC4")
     mk, ax, ctx = _base(f)
-    cuerpo = _extruido(mk, L, T, H, 0., 0., 0.)
+    dx, dy = (T, L) if rotado else (L, T)
+    cuerpo = _extruido(mk, dx, dy, H, 0., 0., 0.)
     rep = mk("IfcShapeRepresentation", ContextOfItems=ctx, RepresentationIdentifier="Body",
              RepresentationType="SweptSolid", Items=[cuerpo])
     muro = mk("IfcWall", GlobalId=ifcopenshell.guid.new(), Name="Muro 0,20",
@@ -67,7 +79,9 @@ def construir(con_cantidades=False, con_hueco=False):
         mk("IfcRelDefinesByProperties", GlobalId=ifcopenshell.guid.new(),
            RelatedObjects=[muro], RelatingPropertyDefinition=eq)
     if con_hueco:
-        hb = _extruido(mk, VW, T * 2, HW, 0., -T / 2, 0.90)
+        hx, hy = (T * 2, VW) if rotado else (VW, T * 2)
+        hpx, hpy = (-T / 2, 0.) if rotado else (0., -T / 2)
+        hb = _extruido(mk, hx, hy, HW, hpx, hpy, 0.90)
         hrep = mk("IfcShapeRepresentation", ContextOfItems=ctx, RepresentationIdentifier="Body",
                   RepresentationType="SweptSolid", Items=[hb])
         hueco = mk("IfcOpeningElement", GlobalId=ifcopenshell.guid.new(), Name="Vano ventana",
@@ -91,33 +105,47 @@ def plan_b(muro):
     """Calcular desde la geometria. Funciona siempre."""
     g = ifcopenshell.geom.create_shape(ifcopenshell.geom.settings(), muro).geometry
     return dict(volumen=ush.get_volume(g),
-                area_lateral=ush.get_side_area(g),
-                area_total_6_caras=ush.get_area(g),
+                cara_mayor=ush.get_max_side_area(g),      # la correcta
+                side_area=ush.get_side_area(g),           # depende del giro: no usar
+                area_total_6_caras=ush.get_area(g),       # las 6 caras: no usar
                 huella=ush.get_footprint_area(g))
 
 
 def main():
-    casos = [("CON BaseQuantities",            dict(con_cantidades=True),  L * T * H),
-             ("SIN BaseQuantities",            dict(),                     L * T * H),
-             ("SIN BaseQuantities + ventana",  dict(con_hueco=True),       L * T * H - VW * T * HW)]
-    print("=" * 78)
+    vol_pleno = L * T * H
+    vol_hueco = vol_pleno - VW * T * HW
+    cara_plena = L * H
+    cara_hueco = cara_plena - VW * HW
+    casos = [
+        ("CON BaseQuantities",                 dict(con_cantidades=True),              vol_pleno, cara_plena),
+        ("SIN BaseQuantities",                 dict(),                                 vol_pleno, cara_plena),
+        ("SIN BaseQuantities + ventana",       dict(con_hueco=True),                   vol_hueco, cara_hueco),
+        ("SIN BaseQuantities + ventana, GIRADO 90", dict(con_hueco=True, rotado=True), vol_hueco, cara_hueco),
+    ]
+    print("=" * 80)
     print(f"  Muro {L} x {T} x {H} m, ventana {VW} x {HW} m")
-    print("=" * 78)
+    print("=" * 80)
     fallos = 0
-    for etiqueta, kw, vol_esperado in casos:
-        f, muro = construir(**kw)
+    for etiqueta, kw, vol_esp, cara_esp in casos:
+        f, muro = construir(**kw)            # retener f: ver el docstring
         a, b = plan_a(muro), plan_b(muro)
         print(f"\n{etiqueta}")
         print(f"  PLAN A  {a[0] + ' -> ' + str(a[1]) if a else 'NADA: el IFC no trae IfcElementQuantity'}")
-        err = abs(b["volumen"] - vol_esperado) / vol_esperado * 100
-        ok = "OK" if err < 0.01 else "FALLO"
-        if err >= 0.01:
-            fallos += 1
-        print(f"  PLAN B  volumen {b['volumen']:.4f} m3  (esperado {vol_esperado:.4f}, error {err:.4f}%)  {ok}")
-        print(f"          area lateral {b['area_lateral']:.4f} m2   <- esta es la de revoque")
-        print(f"          area 6 caras {b['area_total_6_caras']:.4f} m2   <- get_area, NO usar para revoque")
-    print(f"\n{'TODO OK' if not fallos else str(fallos) + ' FALLOS'}: "
-          "sin BaseQuantities el volumen se calcula igual, y exacto.")
+
+        e_vol = abs(b["volumen"] - vol_esp) / vol_esp * 100
+        e_cara = abs(b["cara_mayor"] - cara_esp) / cara_esp * 100
+        fallos += (e_vol >= 0.01) + (e_cara >= 0.01)
+        print(f"  PLAN B  volumen          {b['volumen']:8.4f} m3  esperado {vol_esp:8.4f}  error {e_vol:.4f}%  "
+              f"{'OK' if e_vol < 0.01 else 'FALLO'}")
+        print(f"          get_max_side_area {b['cara_mayor']:8.4f} m2  esperado {cara_esp:8.4f}  error {e_cara:.4f}%  "
+              f"{'OK' if e_cara < 0.01 else 'FALLO'}")
+        print(f"          revoque 2 caras   {2 * b['cara_mayor']:8.4f} m2")
+        marca = "  <-- MAL, depende del giro" if abs(b["side_area"] - b["cara_mayor"]) > 0.01 else ""
+        print(f"          get_side_area     {b['side_area']:8.4f} m2{marca}")
+        print(f"          get_area (6 caras){b['area_total_6_caras']:8.4f} m2  <-- MAL para revoque")
+    print(f"\n{'TODO OK' if not fallos else str(fallos) + ' FALLOS'}")
+    print("  - Sin BaseQuantities el volumen se calcula igual, y exacto.")
+    print("  - get_max_side_area es la correcta: no depende del giro y descuenta huecos.")
     return 1 if fallos else 0
 
 
