@@ -26,7 +26,8 @@ importar en Excel o Google Sheets.
 | **Alcance** | **Materiales + mano de obra + equipos + gastos generales** | Presupuesto formal con coeficiente de impacto (§10) |
 | **Salida** | **CSV** (+ PDF opcional más adelante) | Importable en Excel y Google Sheets (§11) |
 | **Organización** | **Una carpeta por obra, visible en el explorador** | La app es el explorador del proyecto; los archivos también se abren a mano (§5) |
-| **Moneda** | **Pesos, con total convertido a USD** | Cotización con fecha y tipo de dólar elegible (§5) |
+| **Moneda** | **Pesos, con total convertido a USD al oficial** | Tipo de dólar cambiable, oficial por defecto (§5) |
+| **Alícuotas** | **Editables por obra, carga manual** | IIBB e IVA se ingresan a mano en cada proyecto; sin tabla automática (§10) |
 | **Desperdicio** | **Por insumo, editable, con valores sugeridos** | Cargado en el catálogo base de `seed/` (§9) |
 | **Catálogo** | **Catálogo base armado, para que lo corrijas** | 14 rubros, 15 ítems, 34 insumos, 67 líneas de APU en `seed/` |
 
@@ -149,7 +150,8 @@ base de datos.
 ```
 Presupuestos/
   2026-04 Casa Pérez/
-    proyecto.db              mediciones, asignaciones, presupuesto, precios usados
+    proyecto.db              mediciones, asignaciones, presupuesto, precios usados,
+                             alícuotas y coeficientes de impacto de ESTA obra
     plano/
       casa-perez.dxf         COPIA del plano original
       casa-perez.dxf.sha256  para avisar si el original cambió
@@ -195,8 +197,9 @@ explícita que crea una **versión nueva** del presupuesto.
 
 ### Pesos con total en dólares
 
-Elegiste ver el total convertido. Eso es una tabla `cotizacion` con fecha, tipo
-(oficial / MEP / blue / CCL) y valor, más un tipo por defecto configurable.
+Elegiste ver el total convertido, al **dólar oficial**. Eso es una tabla
+`cotizacion` con fecha, tipo (oficial / MEP / blue / CCL) y valor, con **oficial
+como tipo por defecto** y posibilidad de cambiarlo.
 
 **Verificado:** `dolarapi.com/v1/dolares` responde sin autenticación y devuelve
 los cuatro tipos con su fecha de actualización. Lo probé y funciona.
@@ -230,7 +233,7 @@ cambió desde el último cómputo".
 - `insumo` — material, **mano de obra** o **equipo**
 - `apu_detalle` — ítem → insumo → **coeficiente de rendimiento** + **`desperdicio`**
   (% por insumo, no global: el del cerámico no es el del ladrillo — §9)
-- `coef_impacto` — gastos generales, beneficio, impuestos (§10)
+- (el `coef_impacto` dejó de estar acá: es por obra, vive en `proyecto.db` — §10)
 
 **Lado precios (nuevo)**
 - `fuente` — dominio, **tipo de adapter** (vtex / woocommerce / ml / html),
@@ -910,14 +913,60 @@ configurables:
 | Ingresos brutos | según jurisdicción |
 | IVA | 21 % (o 10,5 % en obra de vivienda) |
 
-Dos detalles que importan:
+### Las alícuotas son datos de la obra, y se cargan a mano
 
-- **Las alícuotas son datos, no código.** Van en una tabla editable, con fecha de
-  vigencia. Cambian, y cuando cambian no quiere decir recompilar la app.
-- **El IVA y el precio scrapeado.** El retail publica precio **con** IVA, pero la
-  API de VTEX también da `price_wo_taxes`. Para no contar el IVA dos veces, el
-  costo directo se arma **sin IVA** y el IVA se aplica una sola vez al final. Es
-  un error de doble conteo fácil de cometer y caro de explicar.
+Definido: **los coeficientes de impacto se ingresan manualmente y se editan por
+obra**, no hay tabla de alícuotas automática ni consulta a ningún padrón. La app
+trae valores por defecto y vos los ajustás en cada proyecto.
+
+Esto tiene una consecuencia de diseño que conviene no pasar por alto: **viven en
+`proyecto.db`, no en la base global.** Dos razones:
+
+- **Cambian por obra.** No es lo mismo una refacción particular que una obra para
+  un consorcio, ni la misma alícuota si el comitente es responsable inscripto o
+  consumidor final.
+- **Quedan congeladas con el presupuesto**, igual que los precios (§5). Un
+  presupuesto de marzo tiene que seguir mostrando el IVA que se le aplicó en
+  marzo, aunque la alícuota haya cambiado o vos hayas cambiado tu beneficio.
+
+En la práctica: una pantalla de "Datos del presupuesto" con los cinco campos de
+la tabla de arriba, editables, prellenados con lo último que usaste. El informe
+muestra cada coeficiente aplicado con su porcentaje, para que el comitente vea de
+dónde sale el total.
+
+Queda **pendiente** y no bloquea nada: si en algún momento querés que la app
+sepa las alícuotas de ingresos brutos por jurisdicción, es una tabla de datos
+que se agrega después sin tocar el cálculo.
+
+Otro detalle que importa:
+**El IVA y el precio scrapeado.** El retail publica precio **con** IVA, pero la
+API de VTEX también da `price_wo_taxes`. Para no contar el IVA dos veces, el
+costo directo se arma **sin IVA** y el IVA se aplica una sola vez al final. Es
+un error de doble conteo fácil de cometer y caro de explicar.
+
+**Ojo con las fuentes que no dan el precio sin IVA.** Lo verifiqué fuente por
+fuente y no son todas iguales:
+
+| Fuente | ¿Trae el neto? |
+|---|---|
+| Easy (VTEX) | **Sí**, `price_wo_taxes` |
+| **Merlino (VTEX)** | **No.** El campo no existe en su catálogo |
+| WooCommerce (las 5) | **No.** La Store API no tiene ningún campo de impuesto |
+
+Donde sí está, la semántica se confirma: Easy da `Price` 8.490 y
+`price_wo_taxes` 7.016,53, y el cociente es exactamente **1,21**.
+
+Para las que no lo traen, el neto se obtiene dividiendo por `1 + IVA`. Y el
+`precio` tiene que guardar **cuál de los dos caminos se usó**: si mañana cambia
+la alícuota, los netos derivados por división hay que recalcularlos y los que
+vinieron de la fuente no.
+
+**Y una trampa concreta:** VTEX tiene además un campo `Tax`, y en Merlino
+devuelve **`0.0`** —también en los cementos de Easy— aunque el precio **sí**
+incluye el 21 %. Un implementador que lea `Tax: 0.0` y concluya "este producto no
+tiene IVA" se come un error del 21 % en el rubro más pesado. **`Tax` no sirve
+para decidir nada**; el único campo confiable es `price_wo_taxes`, y cuando falta
+hay que dividir.
 
 ---
 
@@ -1044,6 +1093,9 @@ invertir en el resto.
 | **Planos sin convención de capas** | **Alto** | Es la razón de elegir medición asistida |
 | **Olvidar el desperdicio** | **Alto** | Sin él el presupuesto sale corto siempre. `desperdicio` por insumo en `apu_detalle`, y columnas separadas en el informe (§9) |
 | **No redondear a unidad de compra** | **Alto** | No se compran 37,4 bolsas. `multiplo_compra` en `sku` y columna "a comprar" (§9) |
+| **Alícuota global en vez de por obra** | Medio | Cambian por obra y tienen que quedar congeladas con el presupuesto. Viven en `proyecto.db` (§10) |
+| **Derivar el precio sin IVA por división sin registrarlo** | Medio | Merlino y las fuentes Woo no dan `price_wo_taxes`. Guardar si el neto vino de la fuente o de dividir por `1+IVA` (§10) |
+| **Confiar en el campo `Tax` de VTEX** | **Alto** | Devuelve `0.0` en Merlino y en los cementos de Easy aunque el precio incluye 21 %. Leerlo como "sin IVA" es un error del 21 % (§10) |
 | **Presupuesto que cambia solo** | **Alto** | Si leyera el histórico vivo, un presupuesto viejo mostraría precios de hoy. `proyecto.db` **congela** precio, fuente, link y fecha; re-valorizar crea una versión nueva (§5) |
 | **Convertir a USD insumo por insumo** | Medio | Da distinto que sumar en pesos y convertir el total. El cálculo es en pesos; el dólar es presentación (§5) |
 | **Perder el plano original** | Medio | Se copia a la carpeta del proyecto, no se referencia; se guarda el hash del original para avisar si cambió (§5) |
@@ -1082,10 +1134,10 @@ invertir en el resto.
    de obra, que son los que más varían. Y los rubros **09 sanitaria, 10 eléctrica,
    11 gas, 12 carpinterías** están creados sin ítems a propósito: son los que más
    dependen de tu forma de trabajar.
-2. **¿Qué tipo de dólar querés por defecto?** Oficial, MEP, blue o CCL.
-   `dolarapi` devuelve los cuatro; es un setting, pero conviene fijar el default.
-3. **¿Ingresos brutos de Córdoba y IVA?** Para la alícuota y si aplica el IVA de
-   10,5 % de obra de vivienda.
+2. **Dólar oficial** — definido. Es el tipo por defecto, cambiable.
+3. **Alícuotas: carga manual, editables por obra** — definido. Sin tabla
+   automática. Queda pendiente, para más adelante y sin bloquear nada, una tabla
+   de ingresos brutos por jurisdicción.
 4. **Zona: Córdoba** — confirmado. Es la zona por defecto. Las fuentes
    nacionales quedan como referencia para descubrir insumos, no para el precio.
 5. **¿Hay más corralones cordobeses que uses?** Pasame los sitios y los corro por
