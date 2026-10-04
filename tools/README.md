@@ -10,7 +10,17 @@ python3 tools/comparar_precios.py                     # canasta comparada, con a
 python3 tools/verificar_fuente.py merlinosrl.com.ar   # nivel de UNA fuente
 python3 tools/prueba_cadena.py                        # computo -> APU -> desperdicio -> precio
 python3 tools/prueba_ifc.py                           # IFC con y sin BaseQuantities
+python3 tools/analizar_ifc.py modelo.ifc --geom       # analiza un IFC REAL
 ```
+
+`analizar_ifc.py` es para el archivo de verdad: lee esquema, unidades, niveles,
+cuenta elementos por clase IFC, dice cuales traen BaseQuantities y cuales no, y
+con `--geom` **compara las BaseQuantities contra la geometria** para ver si
+coinciden. Tambien avisa de los IfcBuildingElementProxy, que son elementos sin
+clasificar.
+
+Lee las unidades de IfcUnitAssignment en vez de asumir metros: si el IFC viene
+en milimetros, un volumen esta en mm3 y hay que escalar por 1e-9.
 
 `prueba_ifc.py` necesita `pip install ifcopenshell numpy`. Construye modelos IFC
 de prueba y verifica los dos caminos de lectura: las BaseQuantities exportadas y
