@@ -5,8 +5,9 @@ permite **medir de forma asistida** sobre él, **busca precios de materiales en
 internet**, y produce un **presupuesto completo** exportable a **CSV** para
 importar en Excel o Google Sheets.
 
-> Revisión 2 — incorpora: IFC vía exportación, búsqueda de precios online,
-> alcance de presupuesto completo, instalable Windows y salida CSV.
+> Revisión 3 — incorpora el relevamiento de 24 fuentes de precios (§6), la
+> comparativa multi-fuente y la detección de valores raros (§7). Los scripts que
+> produjeron esos datos están en `tools/` y se pueden volver a correr.
 
 ---
 
@@ -102,9 +103,13 @@ app/
   pricing/               **módulo de precios, aislado**
     sources/
       base.py              interfaz FuenteDePrecios
-      vtex.py              adapter VTEX (sirve para VARIOS retailers)
+      vtex.py              adapter VTEX      -> Easy, Colorshop, +
+      woocommerce.py       adapter WC Store  -> 5 corralones, + los que vengan
       mercadolibre.py      adapter API con OAuth
       html_generico.py     adapter con selectores CSS por sitio
+      dominios.py          tabla dominio -> adapter (agregar fuente = 1 linea)
+    normalizar.py          precio -> unidad del insumo (kg, un, m2, m3)
+    comparador.py          banda de consenso (mediana + IQR) y clasificacion
     matcher.py             insumo -> candidatos de SKU
     cache.py               histórico de precios, nunca pisa datos
   budget/                cómputo -> presupuesto, SIN Qt
@@ -143,10 +148,12 @@ cambió desde el último cómputo".
 - `coef_impacto` — gastos generales, beneficio, impuestos (§7)
 
 **Lado precios (nuevo)**
-- `fuente` — Easy, Sodimac, MercadoLibre…: tipo de adapter, URL base, credenciales
+- `fuente` — dominio, **tipo de adapter** (vtex / woocommerce / ml / html), activa
 - `sku` — fuente, id del producto, nombre, marca, EAN, URL, unidad de venta
 - **`insumo_sku`** — **vínculo confirmado** insumo ↔ SKU + **factor de conversión**
 - `precio` — sku, valor, moneda, fecha/hora, `precio_sin_iva`, disponible, fuente
+- **`insumo.fuente_preferida`** — de qué fuente sale el precio que va al
+  presupuesto. Las demás se guardan igual, para construir la banda (§7)
 
 **El `insumo_sku` es la pieza central del módulo de precios.** La búsqueda por
 texto se hace **una sola vez**; una vez que confirmás que *"Cemento CPC40 25 kg"*
@@ -169,88 +176,96 @@ movió un material y re-valorizar un presupuesto viejo.
 
 ## 6. Búsqueda de precios en internet
 
-Esta es la parte nueva y la más delicada. **Investigué las fuentes reales antes de
-diseñarla**, y el resultado cambia bastante el enfoque.
+Esta es la parte nueva y la más delicada. **Relevé las fuentes reales antes de
+diseñarla**, con los scripts que están en `tools/` y se pueden volver a correr.
 
-### Lo que encontré
+### El método: detectar la plataforma, no escribir un scraper por sitio
 
-**Easy — API JSON pública, funciona hoy.** Easy corre sobre **VTEX**, y la API de
-catálogo de VTEX responde sin autenticación:
+Casi ningún corralón programó su tienda: usa una plataforma de e-commerce. Y las
+plataformas más comunes **exponen API pública sin autenticación**. Así que en vez
+de escribir 20 scrapers, se detecta la plataforma y se escribe **un adapter por
+plataforma**.
 
-```
-GET https://www.easy.com.ar/api/catalog_system/pub/products/search?ft=cemento&_from=0&_to=4
-```
+Probé 24 dominios argentinos de materiales. Resultado:
 
-Lo probé y devuelve JSON limpio con exactamente lo que hace falta:
+| Fuente | Plataforma | API pública | Estado |
+|---|---|---|---|
+| **easy.com.ar** | VTEX | `/api/catalog_system/pub/products/search?ft=` | **✅ funciona** |
+| **colorshop.com.ar** | VTEX | ídem | **✅ funciona** |
+| **laeconomica.com.ar** | WooCommerce | `/wp-json/wc/store/v1/products?search=` | **✅ funciona** |
+| **latejamateriales.com** | WooCommerce | ídem | **✅ funciona** |
+| **centralmaterialesya.com** | WooCommerce | ídem | **✅ funciona** |
+| **germatsrl.com** | WooCommerce | ídem | **✅ funciona** |
+| **grupocanarias.com.ar** | WooCommerce | ídem | **✅ funciona** |
+| sodimac.com.ar | Next.js propio | — (404 en VTEX) | ❌ scraping HTML |
+| aconmateriales.com.ar | Tiendanube | — (requiere API key) | ❌ scraping HTML |
+| corralon-fernandes.com | PrestaShop | — | ❌ scraping HTML |
+| servidos.ar | Next.js | — | ⚠️ índice de referencia (§7) |
+| materialesmoreno.com.ar, rodomateriales.com.ar, trazarshop.com, elalbanil.com.ar, corralonfer.com, corralonlasquintas.com.ar | varias | — | ❌ |
+| barugelazulay, blancotejerina, hierrosmoreno, construyaonline, pinturerias-rex, corralonsanjose | no resolvieron | — | ❌ |
 
-| Campo | Valor de ejemplo |
+**El hallazgo que más vale: la API Store de WooCommerce funciona en 5 corralones.**
+Es pública, sin autenticación, y devuelve JSON estructurado. **Dos adapters —VTEX y
+WooCommerce— cubren 7 fuentes.** Y cada nuevo corralón WooCommerce que aparezca
+entra con costo cero: solo hay que agregar el dominio a una lista.
+
+Eso cambia la economía del módulo por completo. No es "escribir scrapers para
+siempre": son dos adapters y una tabla de dominios.
+
+### Lo que devuelve cada plataforma
+
+**VTEX** (`easy.com.ar`) — probado, devuelve:
+
+| Campo | Ejemplo |
 |---|---|
-| `productName` | `Cemento 25 Kg Avellaneda` |
-| `brand` | `Cementos Avellaneda` |
+| `productName` / `brand` | `Cemento 25 Kg Avellaneda` / `Cementos Avellaneda` |
 | `ean` | `7798042431434` |
 | `Price` / `ListPrice` | `8490.0` |
-| **`price_wo_taxes`** | **`7016.53`** ← precio sin IVA, oro puro para presupuestar |
+| **`price_wo_taxes`** | **`7016.53`** ← precio sin IVA |
 | `Peso` | `25 kg` ← alimenta el factor de conversión |
-| `measurementUnit` | `un` |
-| `AvailableQuantity` / `IsAvailable` | `99999` / `true` |
+| `IsAvailable` / `AvailableQuantity` | `true` / `99999` |
 | `categories` | `/Construcción y Maderas/Obra Gruesa/Cementos y complementos/` |
 
-Un detalle de implementación: en la respuesta, los campos de especificaciones
-como `price_wo_taxes` **vienen como lista de strings** (`["7016.53"]`), no como
-número. El adapter tiene que normalizarlos, y los tests tienen que cubrir el caso
-de que vengan vacíos: `brand` por ejemplo llega como `"-"` en varios productos.
+**WooCommerce Store API** (`laeconomica.com.ar`) — probado, devuelve
+`name`, `sku`, `permalink`, `is_in_stock`, `weight`, `dimensions`, `categories`,
+`brands` y `prices`.
 
-**Esto no es scraping de HTML: es una API JSON estructurada.** Es mucho más
-estable que parsear páginas, y además `robots.txt` de Easy **no bloquea `/api/`**
-(solo `/admin/`, `/account`, `/p?idsku=` y filtros de categoría).
+Dos trampas de implementación, ambas verificadas en datos reales:
 
-**El adapter VTEX es reutilizable.** VTEX es la plataforma de e-commerce de
-muchísimos retailers argentinos. Un solo adapter, bien hecho, sirve para varias
-fuentes cambiando la URL base. **Esta es la mejor noticia técnica del módulo.**
+- **WooCommerce da el precio en unidades mínimas.** `"price": "729979"` con
+  `"currency_minor_unit": 2` es **$7.299,79**, no $729.979. Hay que dividir por
+  `10**minor_unit`. Equivocarse acá multiplica todo por cien.
+- **Los nombres vienen con entidades HTML sin decodificar.** Aparece
+  `Varilla de Hierro Aletado 8mm &#8211; Acindar`. Hay que pasar
+  `html.unescape()` antes de guardar o de mostrar.
 
-**Sodimac — no sirve el mismo camino.** Probé el endpoint VTEX y devuelve **404**:
-Sodimac Argentina no está en VTEX. Requiere scraping HTML o encontrar su API
-propia. Más frágil y de menor prioridad. Además su `robots.txt` bloquea
-`/sodimac-ar/search/`, así que **la búsqueda hay que resolverla sin pasar por esa
-ruta**.
+En VTEX la trampa es otra: los campos de especificaciones como `price_wo_taxes`
+**vienen como lista de strings** (`["7016.53"]`), no como número, y `brand` llega
+como `"-"` en varios productos.
 
-**MercadoLibre — tiene API, pero ya no es abierta.** El endpoint
-`/sites/MLA/search` **hoy exige OAuth**: registrar una aplicación en el portal de
-desarrolladores y manejar access token + refresh. Es gratis y es la fuente con más
-cobertura de corralones chicos, pero implica un flujo de autenticación y manejo de
-rate limit (HTTP 429).
+`robots.txt` de Easy **no bloquea `/api/`** (solo `/admin/`, `/account`,
+`/p?idsku=` y filtros de categoría). El de Sodimac bloquea
+`/sodimac-ar/search/`, que es justamente la ruta de búsqueda: otra razón para
+dejarlo en última prioridad.
 
 ### Cómo queda diseñado
 
-**Un adapter por fuente, detrás de una interfaz común.** Cada fuente declara su
-dificultad y su estabilidad esperada:
-
-| Fuente | Vía | Estabilidad | Prioridad |
+| Adapter | Cubre | Estabilidad | Prioridad |
 |---|---|---|---|
-| **Easy** | **API VTEX pública** | **Alta** | **1 — arrancar acá** |
-| Otros retailers VTEX | mismo adapter, otra URL base | Alta | 2 — costo casi cero |
-| MercadoLibre | API oficial + OAuth | Media (tokens, 429) | 3 |
-| Sodimac | scraping HTML | **Baja, se va a romper** | 4 |
+| **VTEX** | Easy, Colorshop, + cualquier VTEX futuro | **Alta** | **1** |
+| **WooCommerce** | La Económica, La Teja, Central Materiales Ya, Germat, Grupo Canarias | **Alta** | **1** |
+| MercadoLibre | API oficial, exige **OAuth** (ya no es abierta) + rate limit 429 | Media | 3 |
+| HTML genérico | Sodimac, Tiendanube, PrestaShop — selectores CSS por sitio | **Baja, se rompe** | 4 |
 
-**La cotización es asistida, igual que la medición.** No es casualidad: es el mismo
-principio. La app trae candidatos, vos confirmás el vínculo una vez.
+**La cotización es asistida, igual que la medición.** Mismo principio: la app trae
+candidatos, vos confirmás el vínculo **una vez**, y queda guardado en
+`insumo_sku`. Después se refresca por SKU directo.
 
-Que esto no es paranoia lo muestra la prueba real: buscando `cemento` en Easy, el
-cuarto resultado fue **"maceta cemento textura b"**, una maceta de jardín a
-$49.990. Un scraper que tome "el primer resultado" o "el más barato" te mete una
-maceta en el presupuesto de hormigón. **Por eso el vínculo lo confirmás vos, una
-vez, y queda guardado.**
-
-El flujo:
-
-1. Para cada insumo sin vínculo, la app busca en las fuentes activas.
-2. Muestra los candidatos con nombre, marca, precio, unidad y foto.
-3. Elegís el correcto y cargás el **factor de conversión** (bolsa 25 kg → kg).
-   Queda guardado en `insumo_sku`.
-4. **Actualizaciones futuras: consulta directa por SKU.** Sin búsqueda de texto,
-   sin ambigüedad, una request por insumo.
-5. Si un SKU deja de existir o queda sin stock, la app lo marca y te pide
-   re-vincular. **Nunca borra el último precio conocido.**
+Que esto no es paranoia lo demuestran los datos reales. Buscando `cemento` en
+Easy, aparece **"maceta cemento textura b"** a $49.990. Buscando
+`hierro aletado 8`, aparece una **"Prensa para Hamburguesas Hierro 8 Cm"** a
+$27.990. Un scraper que tome el primer resultado o el más barato te mete una
+prensa de hamburguesas en el presupuesto de estructura.
 
 ### Reglas de buena conducta (no opcionales)
 
@@ -264,31 +279,166 @@ Un scraper que se porta mal termina bloqueado, y entonces no tenés precios.
 - **Un botón, no un demonio.** La actualización la disparás vos; no hay un proceso
   martillando los sitios de fondo.
 - **Precios de lista, de referencia.** Un precio de retail online no es una
-  cotización formal de proveedor. El informe lo dice explícitamente con fuente,
-  fecha y hora.
+  cotización formal. El informe lo dice, con fuente, fecha y hora.
 
-### Una observación sobre haber elegido solo scraping
+### Sobre haber elegido solo scraping
 
-Elegiste scraping online como única fuente. Lo implemento así, y el hallazgo de la
-API de VTEX lo vuelve bastante más sólido de lo que esperaba. Dos cosas a tener
-presentes:
+Lo implemento así, y el relevamiento lo volvió bastante más sólido de lo que
+esperaba: 7 fuentes con API pública es mucho más de lo que anticipaba. Dos cosas
+siguen en pie:
 
-**La carga manual de precios no es realmente una alternativa: es el sustrato.** La
-tabla `precio` tiene que poder recibir un valor escrito a mano, porque es lo que
-queda cuando una fuente se cae, cuando un insumo no existe en retail (hormigón
-elaborado, mano de obra, alquiler de equipos) o cuando conseguís un precio mejor
-por teléfono. Está en el plan como capacidad base, no como fuente competidora.
+**La carga manual de precios no es una alternativa: es el sustrato.** La tabla
+`precio` tiene que aceptar un valor escrito a mano, porque es lo que queda cuando
+una fuente se cae y lo que necesitás cuando conseguís un precio mejor por
+teléfono.
 
-**Mano de obra y equipos no se cotizan en retail.** Elegiste presupuesto completo,
-y en Easy no hay "hora de oficial albañil". Esos insumos van a precio manual o por
-índice sí o sí. El scraping cubre materiales; el resto es carga tuya.
-
-Si en algún momento querés importar la lista de precios en Excel de tu corralón,
-es un adapter más contra el mismo modelo de datos. La arquitectura ya lo permite.
+**Mano de obra y equipos no se cotizan en retail.** En Easy no hay "hora de
+oficial albañil". Elegiste presupuesto completo, así que esos insumos van a precio
+manual o por índice sí o sí. El scraping cubre materiales.
 
 ---
 
-## 7. Presupuesto completo
+## 7. Comparativa multi-fuente y detección de valores raros
+
+Corrí una canasta real contra las 7 fuentes con API (`tools/comparar_precios.py`).
+Los resultados cambian el diseño, así que vale la pena mirarlos.
+
+### Qué pasó con el cemento
+
+Normalizando a **$/kg**, el cemento gris común en bolsa de 25 kg dio esto en 5
+fuentes independientes:
+
+```
+n=22   min 292   Q1 302   mediana 315   Q3 351   max 384   ($/kg)
+max/min = 1,31x
+```
+
+**Una banda de 31% punta a punta es consenso real.** Cuando 5 corralones
+independientes coinciden en una franja así, el valor central es confiable y
+cualquier cosa muy afuera merece explicación.
+
+Y después aparecieron los "atípicos", a 94x la mediana:
+
+| Producto | $/kg | ¿Es un error? |
+|---|---|---|
+| Cemento Blanco x 25 kg | 1.638 | **No.** Es otro producto, vale ~5x |
+| Cemento Rápido gris 1 kg | 2.700 | **No.** Otro producto, y envase chico |
+| Cemento Blanco 1 kg | 5.600 | **No.** Otro producto + envase chico |
+| **Pallet Cemento Avellaneda 25 kg (80 bolsas)** | **22.720** | **No. Es el MÁS BARATO** |
+
+### El hallazgo que define el diseño
+
+Ese pallet de $568.000 se marcó como atípico 94x. Pero:
+
+```
+$568.000 / 80 bolsas = $7.100 por bolsa  ->  $284/kg
+mediana del mercado: $315/kg
+=> el pallet está 13% MÁS BARATO que la mediana
+```
+
+**El "valor rarísimo" era la mejor oferta de la tabla.** Un sistema que descarta
+atípicos habría tirado justamente el precio que más conviene.
+
+De ahí sale la regla central del módulo:
+
+> **Un valor raro casi nunca es un precio equivocado. Es otro producto, otro
+> envase o otra unidad de venta.** La dispersión no es ruido para filtrar: es la
+> señal de que falta normalizar.
+
+Lo mismo pasó con los ladrillos (unidad a $1.413 vs pallet a $99.000) y con la cal
+(bolsa de 25 kg a $240/kg vs envase de 5 kg a $1.618/kg). En los tres casos el
+"atípico" era una unidad de venta distinta, no un error.
+
+### Cómo se detectan entonces los valores raros
+
+El orden importa, y es al revés de lo intuitivo:
+
+1. **Normalizar primero.** Todo precio se lleva a la unidad del insumo del APU
+   ($/kg, $/unidad, $/m², $/m³) usando el factor de conversión de `insumo_sku`.
+   Comparar precios sin normalizar no sirve para nada.
+2. **Comparar solo dentro del mismo insumo.** "Cemento" no es un insumo:
+   *Cemento portland CPC40* y *cemento de albañilería* son dos insumos distintos
+   y tienen precios legítimamente distintos. La comparación vive **debajo** del
+   vínculo confirmado, nunca arriba.
+3. **Banda de consenso con cuartiles, no con promedio.** Mediana + rango
+   intercuartílico, criterio de Tukey (`Q1 − 1,5·IQR`, `Q3 + 1,5·IQR`). Con los
+   datos del cemento esa banda da **[230, 423] $/kg**: contiene a todas las
+   ofertas legítimas y excluye al cemento blanco. El promedio y el desvío estándar
+   no sirven acá porque un solo pallet los arrastra.
+4. **Clasificar, no descartar.** Cada precio fuera de banda recibe una etiqueta y
+   un trato distinto:
+
+| Clasificación | Señal | Qué hace la app |
+|---|---|---|
+| **Unidad de venta distinta** | Dice "pallet", "x80", "bulto", "tira", "m³" | **Ofrece dividir** y lo recalcula como candidato válido. Es donde está el ahorro |
+| **Envase chico** | Peso del envase muy menor a la mediana | Lo marca; es precio legítimo pero caro por kg |
+| **Producto distinto** | Palabra discriminante (blanco, rápido, refractario) | Sugiere que es **otro insumo** y ofrece crearlo |
+| **Sospechoso de verdad** | Fuera de banda, misma unidad, mismo producto | **Lo pide confirmar.** Puede ser precio viejo, error de carga o liquidación |
+| Sin stock | `IsAvailable: false` | No entra en la banda, pero **no se borra** el histórico |
+
+El único caso que realmente merece desconfianza es el último. En el relevamiento
+apareció uno: *"Cal Aérea 25 Kg El Milagro"* a **$123/kg**, con la mediana de la
+cal en $355/kg. Mismo envase, mismo tipo de producto, y aun así tres veces más
+barato. Eso es lo que la app tiene que poner adelante para que lo mires: puede ser
+una liquidación real o un precio mal cargado, y la diferencia la decidís vos.
+
+### Un proveedor o varios: varios, pero no para todo
+
+Es la pregunta que hiciste, y los datos la contestan con un matiz.
+
+**Varias fuentes para validar.** El valor de tener 7 fuentes no es elegir siempre
+la más barata: es tener **banda de consenso**. Con una sola fuente, un precio mal
+cargado entra al presupuesto sin que nadie se entere. Con cinco, salta solo. Esto
+es gratis una vez que los adapters existen.
+
+**Una fuente preferida por insumo para el número que firmás.** El presupuesto
+tiene que ser *comprable*. Si cada ítem toma el mínimo de una fuente distinta,
+armás un presupuesto que no existe en la realidad: seis proveedores, seis fletes,
+seis mínimos de compra, y los áridos y el hierro pesado tienen flete que se come
+la diferencia. Así que cada insumo tiene su **fuente preferida**, y el presupuesto
+se arma con esa.
+
+**Y la app te muestra lo que dejás sobre la mesa.** Al lado de cada ítem: precio
+elegido, mediana del mercado y mejor precio disponible con su fuente. Si en
+cemento hay 13% de diferencia comprando por pallet, eso se ve. La decisión de
+cambiar de proveedor o comprar por volumen es tuya, pero informada.
+
+Concretamente, en el modelo de datos:
+
+- `insumo.fuente_preferida` → de dónde sale el precio del presupuesto
+- `insumo_sku` por cada fuente donde ese insumo esté vinculado
+- `precio` acumula todas las fuentes, siempre, para construir la banda
+- El informe `precios.csv` exporta la comparativa completa, no solo el elegido
+
+### Qué cobertura esperar de cada fuente
+
+No todas sirven para lo mismo, y conviene saberlo antes:
+
+- **Easy** tiene el catálogo más amplio por lejos: aparece en todas las búsquedas y
+  con muchas variantes. Es la mejor fuente para **descubrir** y vincular insumos.
+  Pero es retail: en los commodities pesados suele estar en la mitad alta de la
+  banda.
+- **Los corralones WooCommerce** tienen catálogo chico pero precios competitivos, y
+  son los únicos que ofrecen **pallet y venta por volumen**, que es donde está el
+  ahorro real. Grupo Canarias y La Teja aparecieron en el extremo barato.
+- **Colorshop** sirve para pinturas y terminaciones, no para obra gruesa.
+- **Ninguna** cotiza mano de obra, equipos ni hormigón elaborado.
+
+### Un índice de referencia como red de seguridad
+
+Encontré además `servidos.ar/precio-materiales-construccion`, que publica
+**rangos** de precios de materiales en Argentina en vez de un valor único, con el
+criterio explícito de que el mismo material cambia según el canal (mayorista,
+corralón de barrio, retail, plataforma online). No tiene API, pero como
+**contraste de cordura** es útil: si tu banda de consenso se va muy lejos de ese
+rango publicado, algo pasa.
+
+Queda anotado como fuente de referencia de prioridad baja, no como fuente de
+precios para el presupuesto.
+
+---
+
+## 8. Presupuesto completo
 
 Elegiste el alcance formal, así que el cálculo tiene dos niveles:
 
@@ -317,7 +467,7 @@ Dos detalles que importan:
 
 ---
 
-## 8. El informe: CSV
+## 9. El informe: CSV
 
 El informe principal es **CSV**, importable en Excel y Google Sheets. Vale la pena
 no exportar un solo archivo sino **cuatro**, porque son cuatro cosas distintas:
@@ -347,7 +497,7 @@ PDF con carátula queda como mejora posterior; no está en el camino crítico.
 
 ---
 
-## 9. El flujo de uso completo
+## 10. El flujo de uso completo
 
 1. **Abrir** el plano. La app lee `$INSUNITS` y propone las unidades.
 2. **Calibrar escala**: clic en dos puntos de una cota conocida, escribir la medida
@@ -382,7 +532,7 @@ Qué extrae `ezdxf` por tipo de medición:
 
 ---
 
-## 10. Roadmap
+## 11. Roadmap
 
 Cada etapa termina en algo que **se puede abrir y probar**. Estimaciones asumiendo
 trabajo de a ratos, no full-time.
@@ -396,13 +546,15 @@ trabajo de a ratos, no full-time.
 | 4 | Catálogo y APU | ABM de rubros/ítems/insumos y coeficientes de rendimiento | 1 sem |
 | 5 | Cómputo → ítems | Asignación capa→ítem, perfiles guardables, explosión a insumos | 1-1,5 sem |
 | 6 | **Export CSV** | **Los cuatro CSV, con presets Excel es-AR y Google Sheets** | 3-4 d |
-| 7 | **Precios: adapter VTEX** | **Busca "cemento" en Easy, muestra candidatos, vinculás, guarda precio con fecha** | **1-1,5 sem** |
-| 8 | Precios: actualización | Refresco por SKU, caché con TTL, rate limit, histórico, re-vinculación | 1 sem |
-| 9 | Coeficiente de impacto | GG, beneficio, impuestos con fecha de vigencia; presupuesto final | 4-5 d |
-| 10 | IFC | Abre un IFC de Revit y lee `BaseQuantities` directo, sin medir | 1-1,5 sem |
-| 11 | MercadoLibre | OAuth, manejo de token y 429 | 4-5 d |
-| 12 | DWG | Diálogo de conversión; ODA automático **si la licencia lo permite** | 2-4 d |
-| 13 | **Instalable** | **`.exe` + instalador Inno Setup que corre en una PC sin Python** | 4-6 d |
+| 7 | **Precios: adapters VTEX + WooCommerce** | **Busca "cemento" en las 7 fuentes, muestra candidatos, vinculás, guarda precio con fecha** | **1-1,5 sem** |
+| 8 | Normalización y conversión | Factor de conversión por vínculo, extracción de peso/bulto del nombre, $/kg correcto | 4-5 d |
+| 9 | **Comparativa y atípicos** | **Banda de mediana+IQR por insumo, clasificación de fuera-de-banda, "dividir por pallet", fuente preferida** | **1 sem** |
+| 10 | Precios: actualización | Refresco por SKU, caché con TTL, rate limit, histórico, re-vinculación | 1 sem |
+| 11 | Coeficiente de impacto | GG, beneficio, impuestos con fecha de vigencia; presupuesto final | 4-5 d |
+| 12 | IFC | Abre un IFC de Revit y lee `BaseQuantities` directo, sin medir | 1-1,5 sem |
+| 13 | MercadoLibre | OAuth, manejo de token y 429 | 4-5 d |
+| 14 | DWG | Diálogo de conversión; ODA automático **si la licencia lo permite** | 2-4 d |
+| 15 | **Instalable** | **`.exe` + instalador Inno Setup que corre en una PC sin Python** | 4-6 d |
 
 **Por qué el CSV (etapa 6) va antes que los precios (etapa 7):** apenas tengas
 cómputo y catálogo, un CSV de cantidades ya es útil por sí solo —lo abrís en
@@ -416,7 +568,7 @@ invertir en el resto.
 
 ---
 
-## 11. Riesgos
+## 12. Riesgos
 
 | Riesgo | Impacto | Mitigación |
 |---|---|---|
@@ -425,7 +577,12 @@ invertir en el resto.
 | **Doble conteo de IVA** | **Alto** | Costo directo siempre sin IVA, usando `price_wo_taxes`; IVA una sola vez al final |
 | **Vínculo insumo↔SKU equivocado** | **Alto** | La "maceta cemento" del ejemplo real: confirmación manual una vez, vínculo persistente, nunca auto-elegir |
 | **Doble conteo de cantidades** | **Alto** | La UI muestra de dónde sale cada cantidad y resalta en el plano las entidades que la componen |
-| **Scraping de Sodimac se rompe** | Medio | Es la fuente de prioridad 4; Easy/VTEX es la base y no depende de ella |
+| **Comparar sin normalizar** | **Alto** | Es el error que convierte al pallet más barato en "atípico 94x". Normalizar a la unidad del insumo **antes** de comparar (§7) |
+| **Descartar atípicos automáticamente** | **Alto** | Tiraría la mejor oferta. Los fuera-de-banda se **clasifican**, nunca se descartan |
+| **Precio en unidades mínimas (Woo)** | **Alto** | `729979` con `minor_unit: 2` es $7.299,79. Dividir por `10**minor_unit`; test unitario obligatorio |
+| **Comparar insumos distintos** | Medio | Cemento blanco vs portland no son el mismo insumo. La banda se calcula **debajo** del vínculo confirmado |
+| **Scraping de Sodimac se rompe** | Bajo | Es prioridad 4; con 7 fuentes de API pública ya no es necesaria |
+| Entidades HTML en nombres | Bajo | `&#8211;` en WooCommerce: `html.unescape()` al ingestar |
 | **Bloqueo por IP o reCAPTCHA** | Medio | Caché, rate limit, UA honesto, actualización manual y no automática. Easy ya tiene reCAPTCHA en el sitio público, aunque no en `/api/` |
 | **MercadoLibre cambia el OAuth** | Medio | Adapter aislado; si se cae, el resto de las fuentes sigue |
 | **Licencia de ODA** para DWG | Medio | v1 pide DXF; conversión automática es opcional |
@@ -436,20 +593,26 @@ invertir en el resto.
 
 ---
 
-## 12. Lo que queda por definir
+## 13. Lo que queda por definir
 
 1. **¿Qué rubros usás realmente?** Arrancar con tu lista y 15-20 ítems típicos vale
    mucho más que un catálogo genérico. Es lo que más acelera las etapas 4-5.
 2. **¿Qué jurisdicción?** Para la alícuota de ingresos brutos y si aplica IVA 10,5 %
    de obra de vivienda.
-3. **¿Qué corralones usás?** Si alguno tiene tienda web, reviso si corre VTEX. Si
-   corre, entra al adapter con costo casi cero y es mejor fuente que Easy para vos.
-4. **¿Unidades de tus planos?** Metros, centímetros o milímetros cambia los
+3. **¿Qué corralones usás vos, y de qué zona?** Es la pregunta de mayor
+   rendimiento de toda la lista. Pasame los sitios y los corro por
+   `tools/relevar_fuentes.py`: si alguno es VTEX o WooCommerce, entra como fuente
+   con **costo cero** y es mucho mejor que Easy para tu caso, porque es el
+   proveedor al que realmente le comprás. Las 7 fuentes que encontré son un punto
+   de partida, no tu lista definitiva.
+4. **¿Comprás por pallet o por unidad?** Define si la app tiene que priorizar la
+   venta por volumen (13% más barata en cemento) o el precio unitario.
+5. **¿Unidades de tus planos?** Metros, centímetros o milímetros cambia los
    defaults, aunque la calibración lo resuelve igual.
 
 ---
 
-## 13. Próximo paso concreto
+## 14. Próximo paso concreto
 
 Conseguir **un DXF real tuyo** y correr:
 
@@ -463,9 +626,21 @@ Eso contesta en diez minutos las tres preguntas que más condicionan el plan: qu
 convención de capas tienen tus planos, si vienen escalados, y si los contornos
 están cerrados.
 
-Y para ver la fuente de precios con tus propios ojos, esta URL devuelve JSON en el
-navegador, sin instalar nada:
+Y para ver las fuentes de precios con tus propios ojos, sin instalar nada:
+
+```bash
+python3 tools/relevar_fuentes.py      # que plataforma usa cada sitio
+python3 tools/comparar_precios.py     # la canasta comparada, con atipicos
+```
+
+Estas dos URLs devuelven JSON directo en el navegador:
 
 ```
 https://www.easy.com.ar/api/catalog_system/pub/products/search?ft=ladrillo%20hueco&_from=0&_to=9
+https://laeconomica.com.ar/wp-json/wc/store/v1/products?search=cemento&per_page=5
 ```
+
+**Lo más útil que podés hacer ahora** es mandarme los sitios de tus corralones
+para pasarlos por `relevar_fuentes.py`. Si alguno corre WooCommerce —y muchos
+corralones argentinos lo hacen— ya tenés una fuente de precios de tu proveedor
+real, sin escribir una línea de scraping.
