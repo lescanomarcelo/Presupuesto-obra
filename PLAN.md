@@ -69,13 +69,17 @@ el motor de medición se desarrolla contra DXF.
 Un IFC de Revit no tiene líneas: tiene **muros, losas y pisos como objetos**. Acá
 el cómputo no se mide, **se lee**.
 
-**Lo probé** (`tools/prueba_ifc.py`), porque era el supuesto más grande que
-quedaba en pie. Hay dos caminos y los dos funcionan:
+**Lo probé primero con modelos sintéticos** (`tools/prueba_ifc.py`) y después
+**con un modelo real de Revit 2023** —una vivienda de estructura de madera, 5,6 MB,
+24.108 entidades, 2.245 elementos— con `tools/analizar_ifc.py`. El modelo real
+cambió la conclusión, así que conviene leer las dos partes.
+
+Hay dos caminos:
 
 | | Qué hace | Resultado medido |
 |---|---|---|
-| **Plan A** | Leer las `BaseQuantities` que exportó Revit | Devuelve `{Length: 4.0, NetSideArea: 10.4, NetVolume: 2.08}` |
-| **Plan B** | Calcular desde la geometría del sólido | **Volumen exacto, error 0,0000 %** |
+| Leer las `BaseQuantities` que exportó Revit | Devuelve `{Length, NetVolume, NetSideArea…}` | **No siempre confiable (ver abajo)** |
+| Calcular desde la geometría del sólido | Volumen del mallado | **Exacto, y siempre disponible** |
 
 **Y lo más importante: el Plan B descuenta los huecos.** Un muro de
 4,00 × 0,20 × 2,60 con una ventana de 1,20 × 1,10 da **1,8160 m³**, que es
@@ -86,6 +90,66 @@ exactamente el volumen neto, con error 0,0000 %. El área lateral baja de 10,40 
 > viene sin `BaseQuantities` —porque quien exportó no tildó la opción en Revit—
 > no se rompe nada: se calcula desde la geometría y se obtiene el mismo número,
 > exacto. No hay que pedirle a nadie que re-exporte.
+
+### Lo que enseñó el modelo real: la geometría es la fuente, el Qto es el control
+
+En el modelo de Villa Giardino, **4 de 5 clases coincidieron exacto** entre
+`BaseQuantities` y geometría. La quinta falló de forma espectacular:
+
+| Clase | n | Qto por ejemplar | Geometría | Diferencia |
+|---|---|---|---|---|
+| `IfcBeam` | 654 | 5,377 m³ | 5,377 m³ | 0,0 % |
+| `IfcColumn` | 1.383 | 3,270 m³ | 3,266 m³ | +0,1 % |
+| `IfcSlab` | 28 | 2,614 m³ | 2,614 m³ | 0,0 % |
+| `IfcWallStandardCase` | 132 | 2,183 m³ | 2,183 m³ | 0,0 % |
+| **`IfcWall`** | **48** | **12,795 m³** | **1,542 m³** | **+730 %** |
+
+La causa, encontrada mirando los datos: **Revit partió 7 muros en 48 pedazos, y
+copió el `BaseQuantities` completo del muro original en cada pedazo.** Hay
+48 ejemplares pero solo **7 valores distintos** de `(nombre, NetVolume)`.
+
+La prueba de que la geometría es la correcta es contundente: el muro
+`Exterior chapa:670545` aparece 11 veces con `NetVolume = 0,4127` en cada copia, y
+**la suma de la geometría de los 11 pedazos da exactamente 0,4127**. Los pedazos
+reparten el volumen; el Qto lo repite.
+
+> **Por eso se invierte la regla.** La geometría es la fuente primaria del
+> cómputo, y el `BaseQuantities` es el **control de consistencia**. Cuando los dos
+> no coinciden, el que está mal es casi siempre el Qto.
+>
+> Y la detección es simple y obligatoria: **si varios elementos comparten nombre
+> y valor de cantidad, hay duplicación.** La app agrupa, avisa y usa la geometría.
+
+Un beneficio extra del mismo camino: los **29 `IfcBuildingElementProxy`** del
+modelo (elementos sin clasificar) tienen `BaseQuantities` vacío pero **0,664 m³ de
+geometría**. Por el camino geométrico se recuperan; por el Qto se perderían.
+
+### Y hay que pedir la representación "Body" explícitamente
+
+Otro hallazgo del modelo real, y de los que cuestan horas si no se sabe. Esto
+falla en todos los muros de Revit:
+
+```python
+geom.create_shape(settings, muro)
+# RuntimeError: Failed to process shape ... representation:
+#   IfcShapeRepresentation(#99,'Axis','Curve2D',(...))
+```
+
+Los muros traen **dos representaciones**: `Axis` (la línea de eje, un `Curve2D`)
+y `Body` (el sólido). Sin indicar cuál, el kernel intenta procesar el eje y falla.
+Hay que buscarla a mano:
+
+```python
+cuerpo = next(r for r in muro.Representation.Representations
+              if r.RepresentationIdentifier == "Body")
+geom.create_shape(settings, muro, cuerpo)
+```
+
+**Lo peligroso es el camino intermedio.** `geom.iterator` no lanza ninguna
+excepción: devuelve geometría parcial en silencio. Para estos muros dio 3,72 m³
+cuando el valor real es 1,54 — mal, sin un solo error en el log. Un cómputo
+construido sobre el iterator sin verificar contra el Qto estaría mal y nadie se
+enteraría.
 
 **La trampa está en elegir la función correcta** de `ifcopenshell.util.shape`.
 Probé un muro de 3,80 × 0,20 × 2,60 con ventana, **alineado y girado 90°**:
@@ -1258,6 +1322,8 @@ riesgo ya está medido.
 | **Usar `get_side_area` para revoque en IFC** | **Alto** | Depende de la orientación: en un muro girado 90° da 0,74 m² contra 8,56 reales, **error de 11x**, y la mitad de los muros están girados. Usar `2 × get_max_side_area` (§3) |
 | **Usar `get_area` para revoque en IFC** | **Alto** | Devuelve la superficie de las 6 caras: 23,44 m² contra 10,40 reales, **2,25x de más** (§3) |
 | **`SIGSEGV` del kernel de geometría** | **Alto** | Si el objeto `file` se recolecta mientras se usan sus entidades, el proceso muere **sin excepción atrapable**. Retener el `file`, y correr la geometría IFC **en subproceso** (§3) |
+| **Sumar `BaseQuantities` por ejemplar** | **Alto** | Medido en un modelo real: Revit parte los muros y copia el Qto completo en cada pedazo. 48 ejemplares con 7 valores distintos dieron **+730 %**. Agrupar por (nombre, cantidad), avisar, y usar la geometría (§3) |
+| **No pedir la representación `Body`** | **Alto** | `create_shape` sin representación falla en todos los muros de Revit, porque intenta procesar el `Axis`. Y `geom.iterator` devuelve geometría **parcial en silencio**: 3,72 m³ contra 1,54 reales (§3) |
 | `get_footprint_perimeter` de IFC | Medio | Cambió de 8,40 a 11,20 solo por agregar una ventana arriba de la huella. No usarla para zócalos ni perímetros |
 | IFC sin `BaseQuantities` | **Bajo** (era alto) | **Probado:** se calcula desde la geometría con error 0,0000 %, y descuenta huecos. No bloquea |
 | Entidades ACIS / 3D | Bajo | `ezdxf` no las renderiza (limitación documentada); no son cómputo 2D |
@@ -1355,6 +1421,8 @@ vuelva y para saber qué está verificado y qué era suposición.
 | 8 | **Conclusión apresurada: "Terralon no tiene web"** — probé `terralon.com.ar` y `www.terralon.com` (este último está en venta) pero **no** `www.terralon.com.ar`, que es el sitio real, en Magento | Ídem | ✅ corregido; el verificador ahora prueba con y sin `www.` |
 | 9 | **Faltaba el desperdicio** — ninguna versión anterior lo tenía. El presupuesto salía corto siempre | Revisión de apps del rubro (§9) | ✅ agregado al modelo y al roadmap |
 | 10 | **Faltaba el redondeo a unidad de compra** — se calculaban 37,4 bolsas de cemento | Ídem | ✅ agregado |
+| 16 | **"El cómputo no se mide, se lee"** — el plan presentaba las `BaseQuantities` como la fuente y la geometría como respaldo. Con un modelo real es al revés: sumar el Qto por ejemplar dio **+730 %** en los muros | `tools/analizar_ifc.py` sobre el IFC de Villa Giardino | ✅ invertido: la geometría es la fuente, el Qto es el control |
+| 15 | **Faltaba pedir la representación `Body`** — `create_shape` falla en todos los muros de Revit y `geom.iterator` devuelve geometría parcial **sin avisar** | Ídem | ✅ corregido en `analizar_ifc.py` |
 | 14 | **`get_side_area` recomendado para revoque en IFC** (revisión anterior, mismo día) — depende de la orientación: en un muro girado 90° devuelve 0,74 m² contra 8,56 reales, **11x de error**. La correcta es `2 × get_max_side_area` | Prueba con el muro alineado y girado | ✅ corregido |
 | 13 | **Riesgo de IFC sobrevalorado** — marqué "IFC sin BaseQuantities" como el supuesto más grande del plan. Probado, el cálculo por geometría da error **0,0000 %** y descuenta huecos: el riesgo es bajo | `tools/prueba_ifc.py` | ✅ reclasificado a riesgo bajo |
 | 12 | **`price_wo_taxes` recomendado como costo neto** (revisiones 2 a 5) — deriva de `ListPrice`, así que en un producto en oferta sobrevalúa el neto hasta **43 %**. Verificado sobre 25 productos de Easy | Verificación de la alícuota por fuente | ✅ corregido: neto = `Price` / (1 + IVA) |
@@ -1384,6 +1452,10 @@ Conviene tener claro el límite, porque todo el módulo de precios se apoya en e
   lo evita
 - Que `ifcopenshell.draw` genera la planta en SVG con `ifc:guid` e `ifc:name` por
   elemento, lo que permite clic → objeto IFC
+- **Con un IFC real de Revit 2023 (24.108 entidades, 2.245 elementos):** que el
+  100 % de muros, losas, vigas, pilares y cubiertas trae `BaseQuantities`; que
+  4 de 5 clases coinciden con la geometría; y que `IfcWall` difiere **+730 %**
+  porque Revit copió el Qto del muro en cada pedazo partido
 
 **No verificado, es suposición razonable:**
 - Que un IFC **real de Revit**, con cientos de elementos, clases heredadas y

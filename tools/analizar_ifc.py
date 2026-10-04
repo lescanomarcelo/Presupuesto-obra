@@ -14,6 +14,20 @@ Responde, sobre el archivo de verdad:
 
 Las unidades importan: si el IFC esta en milimetros, un volumen viene en mm3 y
 hay que escalar por 1e-9. Se lee de IfcUnitAssignment, no se asume.
+
+DOS COSAS APRENDIDAS CON UN MODELO REAL DE REVIT (Villa Giardino):
+
+1. Hay que pedir la representacion "Body" explicitamente. Los muros de Revit
+   traen dos: "Axis" (la linea de eje, Curve2D) y "Body" (el solido).
+   create_shape(settings, muro) sin mas falla con "Failed to process shape"
+   porque intenta procesar el Axis.
+
+2. Cuando Revit PARTE un muro en varios IfcWall, cada pedazo se lleva el Qto
+   ENTERO del muro original. Sumar el Qto de cada ejemplar multiplica la
+   cantidad por el numero de pedazos: medido, 12,79 m3 en vez de 1,54, un
+   +730%. La geometria de los pedazos SI suma bien (11 pedazos sumaron
+   exactamente el Qto unico del muro). Por eso este script informa las tres
+   sumas y avisa cuando detecta Qto repetido.
 """
 from __future__ import annotations
 import argparse, collections, sys, time
@@ -46,6 +60,34 @@ def factor_longitud(f) -> tuple[float, str]:
                 except Exception:
                     return 1.0, f"{u.Name} (factor no leido)"
     return 1.0, "no declarada (se asume metro)"
+
+
+def volumen_geom(e, fac: float) -> float:
+    """Volumen por geometria. Pide la representacion Body explicitamente:
+    sin eso, create_shape falla en los muros de Revit (traen tambien un Axis)."""
+    import ifcopenshell.geom as geom
+    import ifcopenshell.util.shape as ush
+    if not e.Representation:
+        return 0.0
+    cuerpo = next((r for r in e.Representation.Representations
+                   if r.RepresentationIdentifier == "Body"), None)
+    if cuerpo is None:
+        return 0.0
+    try:
+        return ush.get_volume(geom.create_shape(geom.settings(), e, cuerpo).geometry) * fac ** 3
+    except Exception:
+        return 0.0
+
+
+def cantidad(e, *claves):
+    for pset in uel.get_psets(e, qtos_only=True).values():
+        for k in claves:
+            if k in pset:
+                try:
+                    return float(pset[k])
+                except (TypeError, ValueError):
+                    pass
+    return None
 
 
 def main() -> int:
@@ -111,45 +153,42 @@ def main() -> int:
             print(f"    {c:30} {n:,}")
 
     if a.geom:
-        import ifcopenshell.geom as geom
-        import ifcopenshell.util.shape as ush
-        print(f"\n  COMPARACION Qto vs GEOMETRIA (hasta {a.limite} elementos)")
-        print(f"    {'CLASE':24} {'n':>5} {'vol Qto':>12} {'vol geom':>12} {'dif':>8}")
-        print("    " + "-" * 68)
-        s = geom.settings()
-        it = geom.iterator(s, f, include=[c for c in ("IfcWall","IfcWallStandardCase","IfcSlab","IfcColumn","IfcBeam") if f.by_type(c, include_subtypes=False)])
-        acum = collections.defaultdict(lambda: [0, 0.0, 0.0, 0])
-        n = 0
-        if it.initialize():
-            while n < a.limite:
-                sh = it.get()
-                el = f.by_id(sh.id)
-                clase = el.is_a()
-                try:
-                    vg = ush.get_volume(sh.geometry) * fac**3
-                except Exception:
-                    vg = None
-                vq = None
-                for pset in uel.get_psets(el, qtos_only=True).values():
-                    for k in ("NetVolume", "GrossVolume"):
-                        if k in pset:
-                            vq = float(pset[k]) * fac**3
-                            break
-                r = acum[clase]
-                r[0] += 1
-                if vg: r[2] += vg
-                if vq: r[1] += vq
-                if vq and vg and abs(vg) > 1e-9 and abs(vq-vg)/vg > 0.02: r[3] += 1
-                n += 1
-                if not it.next():
-                    break
-        for clase, (cnt, vq, vg, disc) in sorted(acum.items()):
-            dif = f"{(vq-vg)/vg*100:+.1f}%" if vg > 1e-9 and vq > 0 else "-"
-            print(f"    {clase:24} {cnt:>5} {vq:>12.3f} {vg:>12.3f} {dif:>8}"
-                  + (f"   {disc} elementos difieren >2%" if disc else ""))
-        print(f"\n    medidos {n} elementos en {time.time()-t0:.1f} s")
-        if not acum:
-            print("    no se pudo medir ninguno: el kernel no genero geometria")
+        print(f"\n  VOLUMEN POR TRES CAMINOS (hasta {a.limite} elementos por clase)")
+        print(f"    {'CLASE':22} {'n':>5} {'grupos':>6} {'A) Qto x n':>11} "
+              f"{'B) Qto x grupo':>14} {'C) geometria':>12}")
+        print("    " + "-" * 78)
+        sospechosas = []
+        for clase in CLASES_INTERES:
+            try:
+                els = f.by_type(clase, include_subtypes=False)[:a.limite]
+            except Exception:
+                continue
+            if not els:
+                continue
+            grupos: dict = {}
+            sa = sc = 0.0
+            for e in els:
+                vq = cantidad(e, "NetVolume", "GrossVolume")
+                if vq is not None:
+                    vq *= fac ** 3
+                    sa += vq
+                    grupos.setdefault((e.Name, round(vq, 8)), []).append(e)
+                sc += volumen_geom(e, fac)
+            sb = sum(k[1] for k in grupos)
+            if sa == 0 and sc == 0:
+                continue
+            print(f"    {clase:22} {len(els):>5} {len(grupos):>6} {sa:>11.3f} {sb:>14.3f} {sc:>12.3f}")
+            if sc > 1e-9 and sa > 0 and abs(sa - sc) / sc > 0.05:
+                sospechosas.append((clase, len(els), len(grupos), sa, sb, sc))
+        print(f"\n    medidos en {time.time()-t0:.1f} s")
+        if sospechosas:
+            print(f"\n  !! EL Qto NO COINCIDE CON LA GEOMETRIA en estas clases:")
+            for clase, n, ng, sa, sb, sc in sospechosas:
+                print(f"     {clase}: {n} ejemplares pero solo {ng} valores distintos de Qto.")
+                print(f"       Revit partio los elementos y copio el Qto completo en cada pedazo.")
+                print(f"       Sumar por ejemplar da {sa:.3f} m3 cuando lo real es {sc:.3f} m3 "
+                      f"({(sa-sc)/sc*100:+.0f}%).")
+                print(f"       USAR LA GEOMETRIA (columna C), no el Qto.")
 
     print(f"\n  VEREDICTO")
     muros = len(f.by_type("IfcWall", include_subtypes=True))
