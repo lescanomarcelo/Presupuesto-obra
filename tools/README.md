@@ -11,6 +11,8 @@ python3 tools/verificar_fuente.py merlinosrl.com.ar   # nivel de UNA fuente
 python3 tools/prueba_cadena.py                        # computo -> APU -> desperdicio -> precio
 python3 tools/prueba_ifc.py                           # IFC con y sin BaseQuantities
 python3 tools/analizar_ifc.py modelo.ifc --geom       # analiza un IFC REAL
+python3 tools/planta_ifc.py modelo.ifc                # lista los niveles
+python3 tools/planta_ifc.py modelo.ifc "Nivel 0"      # dibuja la planta en SVG
 ```
 
 `analizar_ifc.py` es para el archivo de verdad: lee esquema, unidades, niveles,

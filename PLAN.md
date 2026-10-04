@@ -43,7 +43,7 @@ problema son Python-first y no tienen equivalente maduro en otro lenguaje.
 | Lectura DXF | `ezdxf` 1.4.x | Entidades, capas, bloques, textos, unidades |
 | **Visor del plano** | `ezdxf.addons.drawing` (`PyQtBackend`, `qtviewer.py`) | **Visor CAD con pan/zoom ya implementado** |
 | Lectura IFC | `ifcopenshell` 0.9.0 | **Probado:** cantidades, y kernel de geometría para calcularlas cuando faltan (§3) |
-| **Visor IFC** | `ifcopenshell.draw` + `QSvgWidget` | **Probado:** planta en SVG con `ifc:guid` por elemento. No hace falta 3D (§3) |
+| **Visor IFC** | `shapely` + `QSvgWidget` (**no** `ifcopenshell.draw`: tiene bugs) | Planta propia en SVG con `ifc:guid` por elemento, 416 elementos en 2,6 s (§3) |
 | Geometría | `shapely` | Áreas, cierre de contornos, validación |
 | Base de datos | SQLite + SQLAlchemy | Local, un archivo, cero servidor |
 | **HTTP precios** | `httpx` | Async, timeouts y reintentos decentes |
@@ -200,25 +200,52 @@ Dos requisitos que salen de esto:
 
 ### Cómo se le muestra el modelo al usuario, sin visor 3D
 
-Un visor 3D es caro y para computar no hace falta. Y hay algo mejor:
-**`ifcopenshell.draw` genera la planta en SVG**, usando shapely, que ya está en
-el stack.
+Un visor 3D es caro y para computar no hace falta: alcanza una **planta 2D en SVG**
+con un `<path>` por elemento, mostrada con `QSvgWidget`.
 
-Lo probé con un modelo de cuatro muros y un nivel: salen **13 `<path>`**, y lo
-importante es que cada uno lleva **`ifc:guid` e `ifc:name`**:
+**`ifcopenshell.draw` parecía resolverlo y no sirve.** Funcionó con mi modelo
+sintético de cuatro muros, pero contra el IFC real de Revit falla de tres formas
+distintas:
+
+| Configuración | Resultado |
+|---|---|
+| sin filtros | el proceso **muere sin dejar traza** |
+| `storey_filter="Nivel 0"` | `TypeError: can only concatenate list (not "tuple") to list` |
+| `include_entities=["IfcWall"]` | `AttributeError: 'SwigPyObject' object has no attribute 'is_a'` |
+
+Son bugs de la librería, no del archivo. **Así que la planta la construimos
+nosotros** (`tools/planta_ifc.py`): proyectar los triángulos del sólido al plano
+XY y unirlos con shapely, que ya está en el stack. Son ~40 líneas.
+
+Medido contra el modelo real:
 
 ```
-nombres recuperables del SVG: ['Planta baja', 'Muro Sur', 'Muro Norte', 'Muro Oeste', 'Muro Este']
+planta_nivel0.svg: 416/416 elementos, 9.95 x 11.41 m, 2.6 s
 ```
 
-**Eso significa que clickear una forma en el SVG devuelve el objeto IFC.** Con
-`QSvgWidget` se resuelve el visor IFC entero: planta 2D navegable, selección por
-clic, y resaltado del elemento que compone cada cantidad —lo mismo que el visor
-DXF, sin escribir un motor 3D.
+**416 de 416 elementos, en 2,6 segundos**, cada `<path>` con su `ifc:guid` y su
+clase. Clic → objeto IFC, que es exactamente lo que hace falta para resaltar las
+entidades que componen cada cantidad.
 
-Un detalle: `auto_floorplan` necesita que el modelo tenga `IfcBuildingStorey`. Un
-IFC de Revit siempre los tiene; mi primer modelo de prueba no, y el SVG salía
-vacío sin dar error.
+### El detalle que arruina la planta: las coordenadas son locales
+
+`geometry.verts` **viene en coordenadas locales del elemento.** La posición está
+aparte, en `shape.transformation.matrix`, y hay que aplicarla a mano:
+
+```python
+v = np.array(sh.geometry.verts).reshape(-1, 3)
+m = np.array(sh.transformation.matrix).reshape(4, 4).T
+v = (m[:3, :3] @ v.T).T + m[:3, 3]      # local -> mundo
+```
+
+Sin eso **todo se apila en el origen**, y lo medí: los 19 pilotes de un nivel
+caían en un cuadrado de 0,20 × 0,20 m, y la planta entera daba 15,24 × 8,75 m
+—que era el tamaño del elemento más largo— en vez de los 9,95 × 11,41 reales.
+Aplicando la matriz, los 19 pilotes aparecen en 19 posiciones distintas.
+
+> **Lo engañoso: los volúmenes no se ven afectados.** El volumen es invariante a
+> la posición, así que el cómputo puede estar perfecto y la planta completamente
+> mal. Son dos cosas que hay que testear por separado.
 
 ### DWG — prioridad 3, con un problema de licencia
 DWG es cerrado; `ezdxf` **no lo lee**. Opciones:
@@ -256,6 +283,7 @@ app/
     dxf_reader.py          geometria a interpretar: capa -> item
     ifc_reader.py          objetos tipados: clase+tipo -> item. Retiene el `file`
     ifc_geom.py            geometria IFC EN SUBPROCESO (el kernel puede hacer SIGSEGV)
+    ifc_planta.py          planta SVG propia: proyeccion XY + shapely (§3)
     dwg_reader.py          (convierte y delega en dxf_reader)
   measure/               motor de medición, SIN Qt ni SQL
     units.py               $INSUNITS + calibración manual de escala
@@ -1323,6 +1351,8 @@ riesgo ya está medido.
 | **Usar `get_area` para revoque en IFC** | **Alto** | Devuelve la superficie de las 6 caras: 23,44 m² contra 10,40 reales, **2,25x de más** (§3) |
 | **`SIGSEGV` del kernel de geometría** | **Alto** | Si el objeto `file` se recolecta mientras se usan sus entidades, el proceso muere **sin excepción atrapable**. Retener el `file`, y correr la geometría IFC **en subproceso** (§3) |
 | **Sumar `BaseQuantities` por ejemplar** | **Alto** | Medido en un modelo real: Revit parte los muros y copia el Qto completo en cada pedazo. 48 ejemplares con 7 valores distintos dieron **+730 %**. Agrupar por (nombre, cantidad), avisar, y usar la geometría (§3) |
+| **No aplicar `transformation.matrix`** | **Alto** | `geometry.verts` es local: sin la matriz todo se apila en el origen. Medido: 19 pilotes en 0,20 × 0,20 m y la planta en 15,24 × 8,75 en vez de 9,95 × 11,41. Los volúmenes **no** se ven afectados, así que el bug pasa desapercibido (§3) |
+| **Depender de `ifcopenshell.draw`** | Medio | Contra un IFC real de Revit muere sin traza, o lanza `TypeError`/`AttributeError` según el filtro. La planta se construye con shapely (§3) |
 | **No pedir la representación `Body`** | **Alto** | `create_shape` sin representación falla en todos los muros de Revit, porque intenta procesar el `Axis`. Y `geom.iterator` devuelve geometría **parcial en silencio**: 3,72 m³ contra 1,54 reales (§3) |
 | `get_footprint_perimeter` de IFC | Medio | Cambió de 8,40 a 11,20 solo por agregar una ventana arriba de la huella. No usarla para zócalos ni perímetros |
 | IFC sin `BaseQuantities` | **Bajo** (era alto) | **Probado:** se calcula desde la geometría con error 0,0000 %, y descuenta huecos. No bloquea |
@@ -1421,6 +1451,8 @@ vuelva y para saber qué está verificado y qué era suposición.
 | 8 | **Conclusión apresurada: "Terralon no tiene web"** — probé `terralon.com.ar` y `www.terralon.com` (este último está en venta) pero **no** `www.terralon.com.ar`, que es el sitio real, en Magento | Ídem | ✅ corregido; el verificador ahora prueba con y sin `www.` |
 | 9 | **Faltaba el desperdicio** — ninguna versión anterior lo tenía. El presupuesto salía corto siempre | Revisión de apps del rubro (§9) | ✅ agregado al modelo y al roadmap |
 | 10 | **Faltaba el redondeo a unidad de compra** — se calculaban 37,4 bolsas de cemento | Ídem | ✅ agregado |
+| 18 | **`ifcopenshell.draw` dado por bueno** — funcionó con un modelo sintético de 4 muros y falla de tres formas distintas con el IFC real. La planta se construye con shapely | `tools/planta_ifc.py` | ✅ reemplazado |
+| 17 | **Faltaba aplicar `transformation.matrix`** — `geometry.verts` es local; sin la matriz la planta apila todo en el origen. No afecta a los volúmenes, así que es un bug silencioso | Ídem | ✅ corregido |
 | 16 | **"El cómputo no se mide, se lee"** — el plan presentaba las `BaseQuantities` como la fuente y la geometría como respaldo. Con un modelo real es al revés: sumar el Qto por ejemplar dio **+730 %** en los muros | `tools/analizar_ifc.py` sobre el IFC de Villa Giardino | ✅ invertido: la geometría es la fuente, el Qto es el control |
 | 15 | **Faltaba pedir la representación `Body`** — `create_shape` falla en todos los muros de Revit y `geom.iterator` devuelve geometría parcial **sin avisar** | Ídem | ✅ corregido en `analizar_ifc.py` |
 | 14 | **`get_side_area` recomendado para revoque en IFC** (revisión anterior, mismo día) — depende de la orientación: en un muro girado 90° devuelve 0,74 m² contra 8,56 reales, **11x de error**. La correcta es `2 × get_max_side_area` | Prueba con el muro alineado y girado | ✅ corregido |
@@ -1456,6 +1488,11 @@ Conviene tener claro el límite, porque todo el módulo de precios se apoya en e
   100 % de muros, losas, vigas, pilares y cubiertas trae `BaseQuantities`; que
   4 de 5 clases coinciden con la geometría; y que `IfcWall` difiere **+730 %**
   porque Revit copió el Qto del muro en cada pedazo partido
+- Que `ifcopenshell.draw` 0.9.0 **no sirve** contra ese modelo (muere o lanza
+  excepciones según el filtro), y que la planta propia con shapely resuelve
+  416 de 416 elementos en 2,6 s con `ifc:guid` por path
+- Que `geometry.verts` está en coordenadas **locales** y la posición hay que
+  aplicarla desde `transformation.matrix`
 
 **No verificado, es suposición razonable:**
 - Que un IFC **real de Revit**, con cientos de elementos, clases heredadas y
