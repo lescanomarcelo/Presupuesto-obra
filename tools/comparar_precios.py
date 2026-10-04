@@ -4,7 +4,10 @@ import urllib.request, urllib.error, urllib.parse
 UA="PresupuestoObra/0.1 (relevamiento tecnico)"
 CTX=ssl.create_default_context(); CTX.check_hostname=False; CTX.verify_mode=ssl.CERT_NONE
 
-VTEX=["www.easy.com.ar","www.colorshop.com.ar"]
+# Zona AMBA / nacional
+VTEX=["www.easy.com.ar","www.colorshop.com.ar",
+      # Zona Cordoba
+      "www.merlinosrl.com.ar"]
 WOO=["laeconomica.com.ar","latejamateriales.com","centralmaterialesya.com",
      "germatsrl.com","grupocanarias.com.ar"]
 

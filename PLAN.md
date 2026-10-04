@@ -23,8 +23,8 @@ importar en Excel o Google Sheets.
 | Revit | **IFC exportado**, no `.rvt` nativo | Evita plugin C# y licencia de Revit. `ifcopenshell` es libre |
 | Medición v1 | **Medición asistida** | La app mide y calcula; vos confirmás qué es cada cosa |
 | **Precios** | **Scraping / API de retail online** | Módulo nuevo, es la parte más delicada del proyecto (§6) |
-| **Alcance** | **Materiales + mano de obra + equipos + gastos generales** | Presupuesto formal con coeficiente de impacto (§7) |
-| **Salida** | **CSV** (+ PDF opcional más adelante) | Importable en Excel y Google Sheets (§8) |
+| **Alcance** | **Materiales + mano de obra + equipos + gastos generales** | Presupuesto formal con coeficiente de impacto (§10) |
+| **Salida** | **CSV** (+ PDF opcional más adelante) | Importable en Excel y Google Sheets (§11) |
 
 ---
 
@@ -41,7 +41,7 @@ problema son Python-first y no tienen equivalente maduro en otro lenguaje.
 | Geometría | `shapely` | Áreas, cierre de contornos, validación |
 | Base de datos | SQLite + SQLAlchemy | Local, un archivo, cero servidor |
 | **HTTP precios** | `httpx` | Async, timeouts y reintentos decentes |
-| **Scraping HTML** | `selectolax` o `beautifulsoup4` | Solo para fuentes sin API (§6) |
+| **Scraping HTML** | `selectolax` | Rápido y liviano; `html.unescape()` de stdlib para las entidades (§6) |
 | Export | `csv` (stdlib) | Es todo lo que hace falta para el informe |
 | Empaquetado | **PyInstaller + Inno Setup** | `.exe` + instalador Windows con accesos y desinstalador |
 
@@ -139,7 +139,9 @@ está mal.
 - `plano` — archivo, hash SHA-256, formato, unidades, factor de escala
 - `perfil_capas` — conjunto de reglas **reutilizable entre planos**
 - `regla` — capa o patrón → tipo de medición → ítem → factor
-- `medicion` — plano, handle de la entidad, tipo, valor crudo, valor final, ítem
+- `medicion` — plano, **layout**, handle de la entidad, tipo, valor crudo, valor
+  final, ítem. El **layout** es obligatorio: sin él se mide dos veces el mismo
+  muro en la planta y en el corte (§9)
 
 Guardar el **handle** permite re-abrir el plano y que las mediciones sigan
 apuntando a las líneas correctas. Guardar el **hash** permite avisar "este plano
@@ -149,15 +151,17 @@ cambió desde el último cómputo".
 - `rubro` — Movimiento de suelo, Mampostería, Instalación sanitaria…
 - `item` — unidad de medida + su APU (ej. "Mampostería 0,15 m, m²")
 - `insumo` — material, **mano de obra** o **equipo**
-- `apu_detalle` — ítem → insumo → **coeficiente de rendimiento**
-- `coef_impacto` — gastos generales, beneficio, impuestos (§7)
+- `apu_detalle` — ítem → insumo → **coeficiente de rendimiento** + **`desperdicio`**
+  (% por insumo, no global: el del cerámico no es el del ladrillo — §9)
+- `coef_impacto` — gastos generales, beneficio, impuestos (§10)
 
 **Lado precios (nuevo)**
 - `fuente` — dominio, **tipo de adapter** (vtex / woocommerce / ml / html),
   **`tipo`** (referencia / propia), **`zona`**, **`nivel`** (automatica / html /
   link), `selectores` (solo nivel html, editables), y salud: `ultimo_ok`,
   `ultimo_error`, `fallos_consecutivos`, `estado` (§8)
-- `sku` — fuente, id del producto, nombre, marca, EAN, URL, unidad de venta
+- `sku` — fuente, id del producto, nombre, marca, EAN, URL, **unidad de venta**,
+  **`multiplo_compra`** (pallet de 80, tira de 6 m: sirve para redondear — §9)
 - **`insumo_sku`** — **vínculo confirmado** insumo ↔ SKU + **factor de conversión**
 - `precio` — sku, valor, moneda, fecha/hora, `precio_sin_iva`, disponible, fuente
 - **`insumo.fuente_preferida`** — de qué fuente sale el precio que va al
@@ -194,7 +198,8 @@ plataformas más comunes **exponen API pública sin autenticación**. Así que e
 de escribir 20 scrapers, se detecta la plataforma y se escribe **un adapter por
 plataforma**.
 
-Probé 24 dominios argentinos de materiales. Resultado:
+Probé 24 dominios argentinos de materiales, y después los 5 corralones
+cordobeses que me pasaste (§8). Resultado del primer barrido:
 
 | Fuente | Plataforma | API pública | Estado |
 |---|---|---|---|
@@ -214,7 +219,8 @@ Probé 24 dominios argentinos de materiales. Resultado:
 
 **El hallazgo que más vale: la API Store de WooCommerce funciona en 5 corralones.**
 Es pública, sin autenticación, y devuelve JSON estructurado. **Dos adapters —VTEX y
-WooCommerce— cubren 7 fuentes.** Y cada nuevo corralón WooCommerce que aparezca
+WooCommerce— cubren 7 fuentes de este barrido, 8 contando Merlino**, que apareció
+después (§8). Y cada nuevo corralón WooCommerce que aparezca
 entra con costo cero: solo hay que agregar el dominio a una lista.
 
 Eso cambia la economía del módulo por completo. No es "escribir scrapers para
@@ -263,7 +269,7 @@ dejarlo en última prioridad.
 | **VTEX** | Easy, Colorshop, + cualquier VTEX futuro | **Alta** | **1** |
 | **WooCommerce** | La Económica, La Teja, Central Materiales Ya, Germat, Grupo Canarias | **Alta** | **1** |
 | MercadoLibre | API oficial, exige **OAuth** (ya no es abierta) + rate limit 429 | Media | 3 |
-| HTML genérico | Sodimac, Tiendanube, PrestaShop — selectores CSS por sitio | **Baja, se rompe** | 4 |
+| **HTML por sitio** | Casa Manrique, Ferrocons, Terralon, Sodimac — selectores CSS **por sitio** | Baja, se rompe | **2 — ver §8** |
 
 **La cotización es asistida, igual que la medición.** Mismo principio: la app trae
 candidatos, vos confirmás el vínculo **una vez**, y queda guardado en
@@ -308,8 +314,10 @@ manual o por índice sí o sí. El scraping cubre materiales.
 
 ## 7. Comparativa multi-fuente y detección de valores raros
 
-Corrí una canasta real contra las 7 fuentes con API (`tools/comparar_precios.py`).
-Los resultados cambian el diseño, así que vale la pena mirarlos.
+Corrí una canasta real contra las 7 fuentes con API del primer barrido
+(`tools/comparar_precios.py`). Merlino todavía no estaba en la lista, así que
+**esta banda es de AMBA**, que es justo lo que después permitió detectar que
+Córdoba cotiza más caro (§8).
 
 ### Qué pasó con el cemento
 
@@ -325,7 +333,8 @@ max/min = 1,31x
 independientes coinciden en una franja así, el valor central es confiable y
 cualquier cosa muy afuera merece explicación.
 
-Y después aparecieron los "atípicos", a 94x la mediana:
+Y después aparecieron los "atípicos". El set completo tiene un `max/min` de
+**94x**, y el pallet está a **72x la mediana**:
 
 | Producto | $/kg | ¿Es un error? |
 |---|---|---|
@@ -336,12 +345,12 @@ Y después aparecieron los "atípicos", a 94x la mediana:
 
 ### El hallazgo que define el diseño
 
-Ese pallet de $568.000 se marcó como atípico 94x. Pero:
+Ese pallet de $568.000 se marcó como atípico, a 72x la mediana. Pero:
 
 ```
 $568.000 / 80 bolsas = $7.100 por bolsa  ->  $284/kg
-mediana del mercado: $315/kg
-=> el pallet está 13% MÁS BARATO que la mediana
+mediana del mercado:                         $315/kg
+=> el pallet esta ~10% MAS BARATO que la mediana
 ```
 
 **El "valor rarísimo" era la mejor oferta de la tabla.** Un sistema que descarta
@@ -408,7 +417,7 @@ se arma con esa.
 
 **Y la app te muestra lo que dejás sobre la mesa.** Al lado de cada ítem: precio
 elegido, mediana del mercado y mejor precio disponible con su fuente. Si en
-cemento hay 13% de diferencia comprando por pallet, eso se ve. La decisión de
+cemento hay ~10% de diferencia comprando por pallet, eso se ve. La decisión de
 cambiar de proveedor o comprar por volumen es tuya, pero informada.
 
 Concretamente, en el modelo de datos:
@@ -597,7 +606,7 @@ En el modelo de datos, `fuente` gana tres campos: `tipo` (referencia / propia),
 `zona`, y `nivel` (automatica / html / link), más los de salud: `ultimo_ok`,
 `ultimo_error`, `fallos_consecutivos`, `estado`.
 
-**El `precios.csv` de §9 pasa a ser el informe más interesante de los cuatro**,
+**El `precios.csv` de §11 pasa a ser el informe más interesante de los cuatro**,
 porque ahí va la comparativa completa con una columna de link por fila. Lo abrís
 en Sheets, los links son clickeables, y verificás el presupuesto entero sin abrir
 la app.
@@ -618,7 +627,7 @@ Tres números deciden:
 - **Si el nivel HTML no existe, 3 de 5 de tus corralones quedan en LINK**, o sea
   carga manual. El panel sin soporte HTML resuelve la mitad del problema.
 
-Conclusión: **se construye, y va dentro de la misma etapa que el panel** (§12,
+Conclusión: **se construye, y va dentro de la misma etapa que el panel** (§13,
 etapa 10), no en una etapa futura indefinida.
 
 ### Pero no es "un adapter genérico": eso no existe
@@ -699,7 +708,114 @@ seguís trabajando.
 
 ---
 
-## 9. Presupuesto completo
+## 9. Lo que hacen las apps del rubro y falta en este plan
+
+Revisé qué saben hacer las herramientas establecidas —PlanSwift, STACK, Bluebeam
+Revu, On-Screen Takeoff, y del lado hispano CostMiner, PresconIA, OneEstimate— y
+encontré **dos omisiones que son errores de diseño, no mejoras opcionales.** Las
+dos son baratas y las dos cambian el número final.
+
+### Omisión 1: desperdicio — el plan calculaba de menos
+
+Ninguna versión anterior de este plan tenía **desperdicio**, y en las apps del
+rubro es un campo de primera clase: PlanSwift describe sus *assemblies* como
+"material, labor, and **waste** assemblies", y en flooring menciona
+"waste factors built in".
+
+No es un detalle: **sin desperdicio el presupuesto sale corto, siempre.** Los
+órdenes de magnitud habituales:
+
+| Insumo | Desperdicio típico |
+|---|---|
+| Ladrillo cerámico | 5 % |
+| Cerámico / porcelanato | 10 % (más si hay diagonales o recortes) |
+| Hierro | 7 % (despuntes) |
+| Mortero y hormigón | 5 % |
+| Pintura | 5-10 % |
+
+Dónde va: **un `desperdicio` en `apu_detalle`**, por insumo dentro del ítem, no
+global. El porcentaje de un cerámico no es el de un ladrillo, y el del mismo
+cerámico cambia si el local es irregular. El informe muestra cantidad neta y
+cantidad con desperdicio en columnas separadas, para que se vea cuánto es cada
+cosa.
+
+### Omisión 2: redondeo a unidad de compra
+
+Ninguna versión anterior lo tenía tampoco, y es el otro lugar donde el número
+que la app calcula no es el número que vas a pagar. **No se compran 37,4 bolsas
+de cemento: se compran 38.** Y si el proveedor vende por pallet cerrado de 80,
+comprar 100 bolsas significa pagar 160.
+
+Esto se conecta directamente con el hallazgo del pallet de §7. La `unidad de
+venta` que ya está en `sku` y el `factor de conversión` de `insumo_sku` son
+exactamente los datos que hacen falta; lo que faltaba era **usarlos al revés**:
+no solo para normalizar el precio hacia abajo, también para redondear la cantidad
+hacia arriba.
+
+El `materiales.csv` pasa a tener tres cantidades, y las tres importan:
+
+| Columna | Ejemplo | Para qué |
+|---|---|---|
+| Cantidad neta | 37,4 bolsas | Lo que dice el cómputo |
+| Con desperdicio | 39,3 bolsas | Lo que hace falta en obra |
+| **A comprar** | **40 bolsas** (o 1 pallet de 80) | **Lo que se pide al corralón** |
+
+Y la diferencia entre la segunda y la tercera columna es información útil: si
+redondear al pallet te hace comprar 80 cuando necesitás 40, quizás convenga el
+precio unitario aunque sea 10 % más caro. Esa comparación la puede mostrar la app.
+
+### Capacidades que vale la pena agregar, en orden de rendimiento
+
+**Orden de compra por proveedor.** Como cada insumo ya tiene `fuente_preferida`,
+agrupar el `materiales.csv` por fuente sale casi gratis y produce lo que de
+verdad se usa: una lista por corralón, lista para mandar por WhatsApp. CostMiner
+lo tiene como módulo de "órdenes". **Costo: bajo. Valor: alto.**
+
+**Memoria de cálculo por ítem.** OneEstimate lo lista como característica
+central ("cada ítem tiene su memoria de cálculo") y en la práctica argentina es lo
+que te piden cuando alguien discute una cantidad. Los datos ya están en la tabla
+`medicion`: es un informe que agrupa por ítem y lista las entidades, sus medidas y
+la suma. **Costo: bajo, es otro CSV. Valor: alto.**
+
+**Plantillas de presupuesto.** Igual que `perfil_capas` del lado del plano, un
+conjunto de rubros e ítems precargado para "vivienda unifamiliar" o "refacción de
+baño". STACK y PlanSwift venden sus librerías de *assemblies* como el principal
+ahorro de tiempo. **Costo: bajo. Valor: alto si repetís tipologías.**
+
+**Comparación de versiones del plano.** Acá es donde las apps grandes se separan:
+STACK tiene *Plan Overlay* para comparar el plano revisado contra el original y
+actualizar **solo** las cantidades que cambiaron, con *audit trail*. El plan
+actual solo detecta por hash que el archivo cambió, y eso obliga a re-medir todo.
+Para DXF se puede hacer algo mejor: comparar por `handle` de entidad y reportar
+agregadas, borradas y modificadas. **Costo: medio-alto. Valor: alto, y sube con
+cuántas revisiones recibas.** Va a una etapa propia, después de la v1.
+
+**Cronograma valorado y curva de inversión.** Estándar en presupuesto formal
+argentino, y presente en PresconIA y NexoSmart. Requiere plazos por rubro, que
+hoy el modelo no tiene. **Fuera de v1**, pero el modelo de datos no lo impide.
+
+**Certificación de avance.** Medir qué porcentaje de cada ítem está ejecutado
+para facturar. Es un módulo distinto (seguimiento de obra, no presupuesto).
+**Fuera de alcance**, anotado para no cerrarle la puerta.
+
+### Un riesgo que encontré revisando esto: el doble conteo entre carátulas
+
+Las apps de takeoff manejan *plan sets* de muchas hojas con *bookmarking*, y hay
+una razón: **medir dos veces lo mismo en dos hojas distintas.** Un DXF suele
+tener varios *layouts* (planta, cortes, vistas, detalles), y el mismo muro aparece
+en la planta y en el corte.
+
+El plan hasta ahora hablaba de `doc.modelspace()` como si hubiera un solo lugar
+donde medir. No lo mencioné en ningún momento y es un agujero real. Requisitos:
+
+- La `medicion` guarda **de qué layout** salió, además del handle.
+- La app muestra qué layout estás midiendo y avisa si asignás la misma capa en
+  dos layouts al mismo ítem.
+- Por defecto se mide **solo en modelspace**, y pasar a otro layout es explícito.
+
+---
+
+## 10. Presupuesto completo
 
 Elegiste el alcance formal, así que el cálculo tiene dos niveles:
 
@@ -728,7 +844,7 @@ Dos detalles que importan:
 
 ---
 
-## 10. El informe: CSV
+## 11. El informe: CSV
 
 El informe principal es **CSV**, importable en Excel y Google Sheets. Vale la pena
 no exportar un solo archivo sino **cuatro**, porque son cuatro cosas distintas:
@@ -758,7 +874,7 @@ PDF con carátula queda como mejora posterior; no está en el camino crítico.
 
 ---
 
-## 11. El flujo de uso completo
+## 12. El flujo de uso completo
 
 1. **Abrir** el plano. La app lee `$INSUNITS` y propone las unidades.
 2. **Calibrar escala**: clic en dos puntos de una cota conocida, escribir la medida
@@ -793,7 +909,7 @@ Qué extrae `ezdxf` por tipo de medición:
 
 ---
 
-## 12. Roadmap
+## 13. Roadmap
 
 Cada etapa termina en algo que **se puede abrir y probar**. Estimaciones asumiendo
 trabajo de a ratos, no full-time.
@@ -803,10 +919,11 @@ trabajo de a ratos, no full-time.
 | 0 | Esqueleto | Repo, venv, Qt abre ventana, SQLite se crea, pytest corre | 2-3 d |
 | 1 | **Visor DXF** | **Abre un DXF real, pan/zoom, capas on/off, clic en entidad muestra capa/tipo/handle** | 1-1,5 sem |
 | 2 | Unidades y escala | Lee `$INSUNITS`, calibración por 2 puntos, mide una distancia correcta en metros | 3-4 d |
-| 3 | Motor de medición | Longitud, área, conteo; tests con DXF sintéticos de área conocida | 1-1,5 sem |
-| 4 | Catálogo y APU | ABM de rubros/ítems/insumos y coeficientes de rendimiento | 1 sem |
+| 3 | Motor de medición | Longitud, área, **volumen**, conteo, **por layout**; tests con DXF sintéticos de área conocida | 1-1,5 sem |
+| 4 | Catálogo y APU | ABM de rubros/ítems/insumos, coeficientes de rendimiento y **desperdicio por insumo** | 1 sem |
 | 5 | Cómputo → ítems | Asignación capa→ítem, perfiles guardables, explosión a insumos | 1-1,5 sem |
-| 6 | **Export CSV** | **Los cuatro CSV, con presets Excel es-AR y Google Sheets** | 3-4 d |
+| 5b | **Desperdicio y redondeo** | **Cantidad neta / con desperdicio / a comprar, con múltiplo de compra** | **2-3 d** |
+| 6 | **Export CSV** | **Los cinco CSV (incluida memoria de cálculo), presets Excel es-AR y Google Sheets** | 4-5 d |
 | 7 | **Precios: adapters VTEX + WooCommerce** | **Busca "cemento" en las 7 fuentes, muestra candidatos, vinculás, guarda precio con fecha** | **1-1,5 sem** |
 | 8 | Normalización y conversión | Factor de conversión por vínculo, extracción de peso/bulto del nombre, $/kg correcto | 4-5 d |
 | 9 | **Comparativa y atípicos** | **Banda de mediana+IQR por insumo, clasificación de fuera-de-banda, "dividir por pallet", fuente preferida** | **1 sem** |
@@ -817,6 +934,15 @@ trabajo de a ratos, no full-time.
 | 14 | MercadoLibre | OAuth, manejo de token y 429 | 4-5 d |
 | 15 | DWG | Diálogo de conversión; ODA automático **si la licencia lo permite** | 2-4 d |
 | 16 | **Instalable** | **`.exe` + instalador Inno Setup que corre en una PC sin Python** | 4-6 d |
+| 17 | Orden de compra por proveedor | Agrupa `materiales.csv` por `fuente_preferida`; lista por corralón | 2-3 d |
+| 18 | Plantillas de presupuesto | Rubros e ítems precargados por tipología de obra | 3-4 d |
+| 19 | Comparar versiones del plano | Diff por handle entre dos DXF: agregadas, borradas, modificadas | 1-1,5 sem |
+
+**Total aproximado hasta la etapa 16 (producto completo e instalable): 18-24
+semanas de trabajo de a ratos.** Las etapas 0-6 son ~5-6 semanas y ya dejan una
+herramienta usable: cómputo con desperdicio y redondeo, exportado a CSV, con
+precios cargados a mano. Todo el módulo de precios (7-11) son otras ~6-7 semanas
+y es la mitad del proyecto en esfuerzo y la mayor parte del riesgo.
 
 **Por qué el CSV (etapa 6) va antes que los precios (etapa 7):** apenas tengas
 cómputo y catálogo, un CSV de cantidades ya es útil por sí solo —lo abrís en
@@ -830,16 +956,19 @@ invertir en el resto.
 
 ---
 
-## 13. Riesgos
+## 14. Riesgos
 
 | Riesgo | Impacto | Mitigación |
 |---|---|---|
 | **Planos sin convención de capas** | **Alto** | Es la razón de elegir medición asistida |
+| **Olvidar el desperdicio** | **Alto** | Sin él el presupuesto sale corto siempre. `desperdicio` por insumo en `apu_detalle`, y columnas separadas en el informe (§9) |
+| **No redondear a unidad de compra** | **Alto** | No se compran 37,4 bolsas. `multiplo_compra` en `sku` y columna "a comprar" (§9) |
+| **Doble conteo entre layouts** | **Alto** | El mismo muro está en la planta y en el corte. `medicion` guarda el layout; por defecto solo modelspace (§9) |
 | **Polilíneas no cerradas** | **Alto** | Problema #1 al medir áreas: tolerancia de cierre configurable + herramienta de cerrar contorno + lista de revisión |
 | **Doble conteo de IVA** | **Alto** | Costo directo siempre sin IVA, usando `price_wo_taxes`; IVA una sola vez al final |
 | **Vínculo insumo↔SKU equivocado** | **Alto** | La "maceta cemento" del ejemplo real: confirmación manual una vez, vínculo persistente, nunca auto-elegir |
 | **Doble conteo de cantidades** | **Alto** | La UI muestra de dónde sale cada cantidad y resalta en el plano las entidades que la componen |
-| **Comparar sin normalizar** | **Alto** | Es el error que convierte al pallet más barato en "atípico 94x". Normalizar a la unidad del insumo **antes** de comparar (§7) |
+| **Comparar sin normalizar** | **Alto** | Es el error que convierte al pallet más barato en "atípico 72x". Normalizar a la unidad del insumo **antes** de comparar (§7) |
 | **Descartar atípicos automáticamente** | **Alto** | Tiraría la mejor oferta. Los fuera-de-banda se **clasifican**, nunca se descartan |
 | **Precio en unidades mínimas (Woo)** | **Alto** | `729979` con `minor_unit: 2` es $7.299,79. Dividir por `10**minor_unit`; test unitario obligatorio |
 | **Comparar insumos distintos** | Medio | Cemento blanco vs portland no son el mismo insumo. La banda se calcula **debajo** del vínculo confirmado |
@@ -861,7 +990,7 @@ invertir en el resto.
 
 ---
 
-## 14. Lo que queda por definir
+## 15. Lo que queda por definir
 
 1. **¿Qué rubros usás realmente?** Arrancar con tu lista y 15-20 ítems típicos vale
    mucho más que un catálogo genérico. Es lo que más acelera las etapas 4-5.
@@ -872,14 +1001,14 @@ invertir en el resto.
 4. **¿Hay más corralones cordobeses que uses?** Pasame los sitios y los corro por
    `tools/verificar_fuente.py`. Con el motor HTML de la etapa 10 ya construido,
    cada uno cuesta 15-30 min de configuración, no desarrollo.
-6. **¿Comprás por pallet o por unidad?** Define si la app tiene que priorizar la
-   venta por volumen (13% más barata en cemento) o el precio unitario.
-7. **¿Unidades de tus planos?** Metros, centímetros o milímetros cambia los
+5. **¿Comprás por pallet o por unidad?** Define si la app tiene que priorizar la
+   venta por volumen (~10% más barata en cemento) o el precio unitario.
+6. **¿Unidades de tus planos?** Metros, centímetros o milímetros cambia los
    defaults, aunque la calibración lo resuelve igual.
 
 ---
 
-## 15. Próximo paso concreto
+## 16. Próximo paso concreto
 
 Conseguir **un DXF real tuyo** y correr:
 
@@ -919,3 +1048,47 @@ python3 tools/verificar_fuente.py <otro-corralon-tuyo>
 Te dice en qué nivel queda cada uno y te muestra los precios que leyó, así ves si
 leyó bien. Es exactamente lo que va a hacer el botón "Verificar" del panel, y
 confirma hoy si la lista de fuentes que vas a usar alcanza.
+
+---
+
+## 17. Errata: errores cometidos y corregidos
+
+Registro de lo que estuvo mal en revisiones anteriores de este plan, para que no
+vuelva y para saber qué está verificado y qué era suposición.
+
+| # | Error | Dónde salió | Estado |
+|---|---|---|---|
+| 1 | **"El pallet está 13% más barato"** — el 13% se calculó contra la mediana del set sin filtrar ($326/kg) mientras el texto citaba la mediana filtrada ($315/kg). El valor correcto es **~10%** | Auditoría numérica de esta revisión | ✅ corregido |
+| 2 | **"Atípico a 94x la mediana"** — 94,67x es el `max/min` del set completo, no la relación con la mediana. El pallet está a **72x** | Ídem | ✅ corregido |
+| 3 | **Referencias cruzadas rotas** — §1 y §5 apuntaban a §7 y §8 para alcance y salida, después de dos renumeraciones de secciones | Ídem | ✅ corregido, con chequeo automático |
+| 4 | **Lista de pendientes numerada 1,2,3,4,6,7** — faltaba el 5 | Ídem | ✅ corregido |
+| 5 | **Contradicción de prioridad** — §6 dejaba el adapter HTML en "prioridad 4" cuando §8 ya lo había movido a la etapa 10 | Ídem | ✅ corregido |
+| 6 | **Conteo de fuentes inconsistente** — "7 fuentes" en §6 y §7 sin aclarar que Merlino apareció después y hace 8 | Ídem | ✅ corregido |
+| 7 | **`verificar_fuente.py` exigía HTTP 200** — VTEX responde **206** al paginar, así que marcaba a Merlino como LINK cuando su API funciona | Verificación de los 5 corralones | ✅ corregido en el código |
+| 8 | **Conclusión apresurada: "Terralon no tiene web"** — probé `terralon.com.ar` y `www.terralon.com` (este último está en venta) pero **no** `www.terralon.com.ar`, que es el sitio real, en Magento | Ídem | ✅ corregido; el verificador ahora prueba con y sin `www.` |
+| 9 | **Faltaba el desperdicio** — ninguna versión anterior lo tenía. El presupuesto salía corto siempre | Revisión de apps del rubro (§9) | ✅ agregado al modelo y al roadmap |
+| 10 | **Faltaba el redondeo a unidad de compra** — se calculaban 37,4 bolsas de cemento | Ídem | ✅ agregado |
+| 11 | **Faltaba el layout en `medicion`** — el plan trataba el DXF como si hubiera un solo lugar donde medir, habilitando doble conteo entre planta y corte | Ídem | ✅ agregado |
+
+### Qué está verificado y qué no
+
+Conviene tener claro el límite, porque todo el módulo de precios se apoya en esto.
+
+**Verificado con datos reales, reproducible con `tools/`:**
+- Las 8 fuentes con API pública, con muestras de precio leídas
+- La banda de consenso del cemento (22 observaciones, 5 fuentes)
+- Las dos trampas de WooCommerce (unidades mínimas, entidades HTML)
+- La trampa del `content` vs `x m²` de Ferrocons
+- Que los 3 sitios HTML sirven el precio desde el servidor, sin JavaScript
+- Que ninguno de los 3 tiene JSON-LD `Product`
+- Que `ezdxf` incluye `qtviewer.py` y el add-on `drawing` (documentación oficial)
+
+**No verificado, es suposición razonable:**
+- Que `ifcopenshell` lee las `BaseQuantities` de un IFC exportado de Revit **sin
+  retoques**. No probé un IFC real. Es el supuesto más grande que queda en pie
+- Los porcentajes de desperdicio de la tabla de §9: son valores de manual, hay
+  que ajustarlos a tu práctica
+- Que la licencia del ODA File Converter permita redistribuir el flujo DWG
+- Los tiempos del roadmap
+
+---
