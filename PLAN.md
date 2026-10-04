@@ -315,7 +315,7 @@ siempre": son dos adapters y una tabla de dominios.
 | `productName` / `brand` | `Cemento 25 Kg Avellaneda` / `Cementos Avellaneda` |
 | `ean` | `7798042431434` |
 | `Price` / `ListPrice` | `8490.0` |
-| **`price_wo_taxes`** | **`7016.53`** ← precio sin IVA |
+| `price_wo_taxes` | `7016.53` ← **ojo: deriva de `ListPrice`, no sirve como neto (§10)** |
 | `Peso` | `25 kg` ← alimenta el factor de conversión |
 | `IsAvailable` / `AvailableQuantity` | `true` / `99999` |
 | `categories` | `/Construcción y Maderas/Obra Gruesa/Cementos y complementos/` |
@@ -939,34 +939,55 @@ sepa las alícuotas de ingresos brutos por jurisdicción, es una tabla de datos
 que se agrega después sin tocar el cálculo.
 
 Otro detalle que importa:
-**El IVA y el precio scrapeado.** El retail publica precio **con** IVA, pero la
-API de VTEX también da `price_wo_taxes`. Para no contar el IVA dos veces, el
-costo directo se arma **sin IVA** y el IVA se aplica una sola vez al final. Es
-un error de doble conteo fácil de cometer y caro de explicar.
+**El IVA y el precio scrapeado.** El retail publica precio **con** IVA. Para no
+contar el IVA dos veces, el costo directo se arma **sin IVA** —dividiendo por
+`1 + IVA`, ver abajo— y el IVA se aplica una sola vez al final.
 
-**Ojo con las fuentes que no dan el precio sin IVA.** Lo verifiqué fuente por
-fuente y no son todas iguales:
+### El neto se calcula dividiendo, no se lee
 
-| Fuente | ¿Trae el neto? |
+Esto **corrige lo que decían las revisiones 2 a 5 de este plan**, que
+recomendaban usar `price_wo_taxes` de VTEX como costo neto. Está mal, y el error
+puede ser grande.
+
+Primero, la disponibilidad del campo no es uniforme. Lo verifiqué:
+
+| Fuente | ¿Trae `price_wo_taxes`? |
 |---|---|
-| Easy (VTEX) | **Sí**, `price_wo_taxes` |
+| Easy (VTEX) | Sí |
 | **Merlino (VTEX)** | **No.** El campo no existe en su catálogo |
 | WooCommerce (las 5) | **No.** La Store API no tiene ningún campo de impuesto |
 
-Donde sí está, la semántica se confirma: Easy da `Price` 8.490 y
-`price_wo_taxes` 7.016,53, y el cociente es exactamente **1,21**.
+Pero el problema de fondo es otro. Sobre 25 productos de Easy con el campo
+presente, el cociente da **exactamente 1,21 en los 25 casos… contra `ListPrice`,
+no contra `Price`.** O sea: **`price_wo_taxes` se deriva del precio de lista, no
+del precio que realmente pagás.** Cuando el producto está en oferta, los dos se
+separan:
 
-Para las que no lo traen, el neto se obtiene dividiendo por `1 + IVA`. Y el
-`precio` tiene que guardar **cuál de los dos caminos se usó**: si mañana cambia
-la alícuota, los netos derivados por división hay que recalcularlos y los que
-vinieron de la fuente no.
+```
+Bloque Cemento 10 Cm Corblock, en oferta:
+  Price            $ 1.225,00   <- lo que pagas
+  ListPrice        $ 1.750,00   <- precio de lista
+  price_wo_taxes   $ 1.446,29   = ListPrice / 1,21
 
-**Y una trampa concreta:** VTEX tiene además un campo `Tax`, y en Merlino
-devuelve **`0.0`** —también en los cementos de Easy— aunque el precio **sí**
-incluye el 21 %. Un implementador que lea `Tax: 0.0` y concluya "este producto no
-tiene IVA" se come un error del 21 % en el rubro más pesado. **`Tax` no sirve
-para decidir nada**; el único campo confiable es `price_wo_taxes`, y cuando falta
-hay que dividir.
+  neto correcto  = Price / 1,21 = $ 1.012,40
+  price_wo_taxes                = $ 1.446,29   -> sobrevalua el neto un 43 %
+```
+
+Un presupuesto armado con `price_wo_taxes` **se come el descuento entero y cotiza
+de más**. Así que la regla queda al revés de como estaba:
+
+> **Neto = `Price` / (1 + IVA), siempre y para toda fuente.** Es uniforme,
+> funciona igual en VTEX y en WooCommerce, y respeta las ofertas.
+>
+> **`price_wo_taxes` sirve para una sola cosa: confirmar la alícuota** que aplicó
+> la fuente. Si en algún producto el cociente contra `ListPrice` no diera 1,21,
+> eso avisaría de un IVA distinto (10,5 %) o de un impuesto interno. Es un
+> chequeo, no un dato de entrada.
+
+**Y una trampa más:** VTEX tiene un campo `Tax` que en Merlino devuelve **`0.0`**
+—también en los cementos de Easy— aunque el precio **sí** incluye el 21 %. Leer
+`Tax: 0.0` como "este producto no tiene IVA" es un error del 21 % en el rubro más
+pesado. **`Tax` no sirve para decidir nada.**
 
 ---
 
@@ -1101,7 +1122,8 @@ invertir en el resto.
 | **Perder el plano original** | Medio | Se copia a la carpeta del proyecto, no se referencia; se guarda el hash del original para avisar si cambió (§5) |
 | **Doble conteo entre layouts** | **Alto** | El mismo muro está en la planta y en el corte. `medicion` guarda el layout; por defecto solo modelspace (§9) |
 | **Polilíneas no cerradas** | **Alto** | Problema #1 al medir áreas: tolerancia de cierre configurable + herramienta de cerrar contorno + lista de revisión |
-| **Doble conteo de IVA** | **Alto** | Costo directo siempre sin IVA, usando `price_wo_taxes`; IVA una sola vez al final |
+| **Doble conteo de IVA** | **Alto** | Costo directo siempre sin IVA, dividiendo `Price` por `1 + IVA`; IVA una sola vez al final |
+| **Usar `price_wo_taxes` como costo neto** | **Alto** | Deriva de `ListPrice`, no de `Price`: en un producto en oferta sobrevalúa el neto hasta **43 %**. Neto = `Price` / (1 + IVA), siempre (§10) |
 | **Vínculo insumo↔SKU equivocado** | **Alto** | La "maceta cemento" del ejemplo real: confirmación manual una vez, vínculo persistente, nunca auto-elegir |
 | **Doble conteo de cantidades** | **Alto** | La UI muestra de dónde sale cada cantidad y resalta en el plano las entidades que la componen |
 | **Comparar sin normalizar** | **Alto** | Es el error que convierte al pallet más barato en "atípico 72x". Normalizar a la unidad del insumo **antes** de comparar (§7) |
@@ -1210,6 +1232,7 @@ vuelva y para saber qué está verificado y qué era suposición.
 | 8 | **Conclusión apresurada: "Terralon no tiene web"** — probé `terralon.com.ar` y `www.terralon.com` (este último está en venta) pero **no** `www.terralon.com.ar`, que es el sitio real, en Magento | Ídem | ✅ corregido; el verificador ahora prueba con y sin `www.` |
 | 9 | **Faltaba el desperdicio** — ninguna versión anterior lo tenía. El presupuesto salía corto siempre | Revisión de apps del rubro (§9) | ✅ agregado al modelo y al roadmap |
 | 10 | **Faltaba el redondeo a unidad de compra** — se calculaban 37,4 bolsas de cemento | Ídem | ✅ agregado |
+| 12 | **`price_wo_taxes` recomendado como costo neto** (revisiones 2 a 5) — deriva de `ListPrice`, así que en un producto en oferta sobrevalúa el neto hasta **43 %**. Verificado sobre 25 productos de Easy | Verificación de la alícuota por fuente | ✅ corregido: neto = `Price` / (1 + IVA) |
 | 11 | **Faltaba el layout en `medicion`** — el plan trataba el DXF como si hubiera un solo lugar donde medir, habilitando doble conteo entre planta y corte | Ídem | ✅ agregado |
 
 ### Qué está verificado y qué no
@@ -1221,6 +1244,9 @@ Conviene tener claro el límite, porque todo el módulo de precios se apoya en e
 - La banda de consenso del cemento (22 observaciones, 5 fuentes)
 - Las dos trampas de WooCommerce (unidades mínimas, entidades HTML)
 - La trampa del `content` vs `x m²` de Ferrocons
+- Que `price_wo_taxes` deriva de `ListPrice` (25 de 25 productos de Easy) y que
+  el campo `Tax` de VTEX devuelve `0.0` con el IVA incluido
+- Que `dolarapi.com` responde sin autenticación con los cuatro tipos de cambio
 - Que los 3 sitios HTML sirven el precio desde el servidor, sin JavaScript
 - Que ninguno de los 3 tiene JSON-LD `Product`
 - Que `ezdxf` incluye `qtviewer.py` y el add-on `drawing` (documentación oficial)
