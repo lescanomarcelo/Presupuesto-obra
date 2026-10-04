@@ -5,9 +5,16 @@ proyecto: solo la stdlib de Python 3. Sirven para repetir y verificar el
 relevamiento documentado en `PLAN.md` §6 y §7.
 
 ```bash
-python3 tools/relevar_fuentes.py     # que plataforma usa cada sitio y si tiene API publica
-python3 tools/comparar_precios.py    # canasta comparada entre fuentes, con atipicos
+python3 tools/relevar_fuentes.py                      # plataforma de cada sitio de una lista
+python3 tools/comparar_precios.py                     # canasta comparada, con atipicos
+python3 tools/verificar_fuente.py merlinosrl.com.ar   # nivel de UNA fuente
 ```
+
+`verificar_fuente.py` es el prototipo del boton "Verificar" del panel de fuentes
+(PLAN.md §8). Toma un dominio, prueba con y sin `www.`, prueba los adapters en
+orden (VTEX, WooCommerce, Shopify), y si ninguno responde busca un buscador HTML
+legible. Devuelve el nivel de la fuente -- AUTOMATICA, HTML o LINK -- y una
+muestra de los precios que leyo, para que se pueda confirmar a ojo.
 
 `relevar_fuentes.py` prueba, para cada dominio, las huellas de las plataformas de
 e-commerce con API publica conocida (VTEX, WooCommerce Store API, Shopify) y, si
@@ -19,6 +26,15 @@ cuando puede extraer el peso del nombre, y marca los valores fuera de banda.
 Ambos usan un `User-Agent` identificable, hacen pocas consultas y son de solo
 lectura. Si vas a correrlos seguido, agregales cache: los sitios no tienen por
 que subsidiar nuestras pruebas.
+
+Dos cosas que estos scripts dejaron a la vista y que estan en el plan como
+requisitos:
+
+- **VTEX responde `HTTP 206`**, no 200, cuando se pagina con `_from`/`_to`.
+  Exigir 200 descartaba a Merlino, que funciona perfecto.
+- **"Detecte la plataforma" no es "puedo leer precios".** Edificor es VTEX con la
+  API de catalogo en 404, y Casa Manrique es WooCommerce con la REST API apagada.
+  El nivel se decide por una busqueda real, no por la huella.
 
 **Nota:** `comparar_precios.py` deja a la vista el problema que justifica el
 diseno asistido. Buscando "hierro aletado 8" aparece una "Prensa para

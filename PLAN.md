@@ -5,8 +5,9 @@ permite **medir de forma asistida** sobre él, **busca precios de materiales en
 internet**, y produce un **presupuesto completo** exportable a **CSV** para
 importar en Excel o Google Sheets.
 
-> Revisión 3 — incorpora el relevamiento de 24 fuentes de precios (§6), la
-> comparativa multi-fuente y la detección de valores raros (§7). Los scripts que
+> Revisión 4 — incorpora el relevamiento de fuentes de precios (§6), la
+> comparativa multi-fuente y la detección de valores raros (§7), y el panel de
+> fuentes con verificación, alta y baja de corralones (§8). Los scripts que
 > produjeron esos datos están en `tools/` y se pueden volver a correr.
 
 ---
@@ -108,6 +109,8 @@ app/
       mercadolibre.py      adapter API con OAuth
       html_generico.py     adapter con selectores CSS por sitio
       dominios.py          tabla dominio -> adapter (agregar fuente = 1 linea)
+    verificador.py         detecta plataforma y decide nivel de una fuente (§8)
+    salud.py               canario por fuente, fallos consecutivos, degradacion
     normalizar.py          precio -> unidad del insumo (kg, un, m2, m3)
     comparador.py          banda de consenso (mediana + IQR) y clasificacion
     matcher.py             insumo -> candidatos de SKU
@@ -148,7 +151,10 @@ cambió desde el último cómputo".
 - `coef_impacto` — gastos generales, beneficio, impuestos (§7)
 
 **Lado precios (nuevo)**
-- `fuente` — dominio, **tipo de adapter** (vtex / woocommerce / ml / html), activa
+- `fuente` — dominio, **tipo de adapter** (vtex / woocommerce / ml / html),
+  **`tipo`** (referencia / propia), **`zona`**, **`nivel`** (automatica / html /
+  link), `selectores` (solo nivel html, editables), y salud: `ultimo_ok`,
+  `ultimo_error`, `fallos_consecutivos`, `estado` (§8)
 - `sku` — fuente, id del producto, nombre, marca, EAN, URL, unidad de venta
 - **`insumo_sku`** — **vínculo confirmado** insumo ↔ SKU + **factor de conversión**
 - `precio` — sku, valor, moneda, fecha/hora, `precio_sin_iva`, disponible, fuente
@@ -438,7 +444,179 @@ precios para el presupuesto.
 
 ---
 
-## 8. Presupuesto completo
+## 8. Fuentes de referencia y el panel de fuentes
+
+Tu propuesta —**que la app muestre la lista con el link y que vos puedas ir a
+verificarlo**— cambia el encuadre del módulo para mejor, así que la adopto como
+principio y no como pantalla suelta.
+
+### El cambio de encuadre: la app no es un oráculo, es un asistente
+
+Un presupuesto lo firmás vos. Si la app presenta un número sin decir de dónde
+salió, te obliga a confiar a ciegas en un scraper. Si muestra **el precio, la
+fuente, la fecha y el link**, te deja hacer en dos clics lo único que da certeza:
+mirar.
+
+Por eso **el link es obligatorio en todas las fuentes, siempre**, incluso en las
+automáticas. La diferencia entre niveles de fuente no es si hay link: es si el
+número viene prellenado.
+
+### Tres niveles de fuente
+
+| Nivel | Qué significa | Qué hace la app | Esfuerzo tuyo |
+|---|---|---|---|
+| **AUTOMÁTICA** | API pública que devuelve JSON | Trae precio, stock y link sola | Confirmar el vínculo una vez |
+| **HTML** | Hay buscador web legible, sin API | Trae precio con selectores + link. **Se rompe cuando el sitio cambie** | Revisar cada tanto |
+| **LINK** | No se puede leer el precio | Guarda el link de búsqueda, te lo abre en el navegador | Cargás el precio a mano |
+
+**El nivel LINK no es un fracaso, es un nivel legítimo.** Un corralón en nivel
+LINK sigue aportando lo que más importa: queda registrado de dónde salió ese
+precio y con qué fecha. Eso es trazabilidad, y es más de lo que tenés hoy en una
+planilla.
+
+### Tus cinco corralones: los verifiqué
+
+Escribí `tools/verificar_fuente.py`, que es el prototipo del botón "Verificar"
+del panel. Esto dio con los que nombraste:
+
+| Corralón | Dominio real | Plataforma | Nivel |
+|---|---|---|---|
+| **Merlino** | `www.merlinosrl.com.ar` | VTEX | **AUTOMÁTICA** ✅ |
+| **Casa Manrique** | `casamanrique.com.ar` | WooCommerce | **HTML** |
+| **Ferrocons** | `ferrocons.com.ar` | PrestaShop | **HTML** |
+| **Terralon** | `www.terralon.com.ar` | Magento | **HTML** |
+| **Edificor** | `edificor.com` | VTEX (API apagada) | **LINK** |
+
+Tres observaciones que salieron del relevamiento y valen más que la tabla:
+
+**Merlino funciona y es tu mejor fuente nueva.** Devuelve `Cemento Normal
+Avellaneda 25kg` a **$8.882**, o sea **$355/kg**. La banda de consenso de AMBA
+(§7) estaba en $315/kg de mediana: **Merlino está 13% arriba**. Eso no es un error
+de Merlino, es el precio real de Córdoba, y es exactamente la razón por la que
+**necesitás tus fuentes locales y no las de referencia**. Si presupuestás una obra
+en Córdoba con precios de Easy AMBA, te quedás 13% corto en el rubro más pesado.
+
+**Ferrocons y Terralon son de Córdoba.** Lo que confirma lo anterior y sugiere que
+tu catálogo de fuentes debería estar **agrupado por zona**, porque mezclar precios
+de Córdoba y de AMBA en una misma banda de consenso la hace inservible.
+
+**"Detecté la plataforma" no significa "puedo leer precios".** Edificor es VTEX y
+devuelve 404 en la API de catálogo; Casa Manrique es WooCommerce con la REST API
+apagada (`/wp-json/` da 404). Las dos huellas eran correctas y las dos fuentes son
+inutilizables por API.
+
+> De ahí la regla de verificación del panel: **el nivel de una fuente se decide
+> por una búsqueda real que devuelva un precio parseable, nunca por la plataforma
+> detectada.** La huella sirve para elegir qué adapter probar primero; no es
+> prueba de nada.
+
+### Una lección de un bug real
+
+La primera corrida del verificador marcó a Merlino como LINK, cuando yo ya había
+comprobado a mano que su API andaba. No era un problema de Merlino: **VTEX
+responde `HTTP 206 Partial Content`** cuando se pagina con `_from`/`_to`, y mi
+código exigía exactamente `200`. Una fuente perfectamente buena quedaba
+descartada en silencio.
+
+Queda como requisito explícito: **aceptar cualquier 2xx**, y que cuando una
+verificación falle el panel diga *qué* falló (código HTTP, timeout, JSON
+inválido), no solo "no funciona". Un falso negativo que no explica su motivo es
+peor que un error.
+
+### El panel de fuentes
+
+Una pantalla de configuración, con la lista completa y estado visible:
+
+```
+┌─ Fuentes de precios ─────────────────────────────────────────────────────┐
+│  Zona: [ Córdoba ▾ ]                      [+ Agregar fuente]  [Verificar │
+│                                                                   todas] │
+│  FUENTE            ZONA      NIVEL        ESTADO            ÚLTIMO OK    │
+│  ───────────────────────────────────────────────────────────────────────  │
+│  ● Merlino         Córdoba   AUTOMÁTICA   OK                hace 2 h  ⚙  │
+│  ● Easy            Nacional  AUTOMÁTICA   OK                hace 2 h  ⚙  │
+│  ▲ Casa Manrique   Córdoba   HTML         Degradada (2/5)   ayer     ⚙  │
+│  ● Ferrocons       Córdoba   HTML         OK                hace 2 h  ⚙  │
+│  ○ Edificor        Córdoba   LINK         manual                 —   ⚙  │
+│  ✕ Terralon        Córdoba   HTML         Caída: HTTP 503    hace 6 d  ⚙  │
+│                                                                          │
+│  Terralon falló 5 veces seguidas y quedó pausada. Sus precios anteriores │
+│  siguen guardados.                 [Reintentar]  [Pasar a LINK]  [Quitar]│
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+**Agregar una fuente nueva** — pegás la dirección y la app hace el resto:
+
+1. Normaliza el dominio y prueba también con y sin `www.` (Merlino solo responde
+   con `www.`; Terralon solo como `www.terralon.com.ar`).
+2. Prueba los adapters en orden: VTEX → WooCommerce → Shopify.
+3. Si ninguno responde, busca un buscador HTML legible probando las rutas típicas
+   de cada plataforma (`/?s=`, `/buscar?controller=search`, `/search?q=`,
+   `/catalogsearch/result/?q=`).
+4. **Te muestra lo que encontró**: los primeros 5 productos con su precio, para
+   que veas con tus ojos que leyó bien antes de confirmar.
+5. Vos le ponés nombre y zona, y queda guardada con su nivel.
+
+Si no logró leer nada, **no la rechaza**: la ofrece como fuente LINK. Siempre hay
+un camino para agregar el corralón que querés.
+
+**Cuando una fuente se rompe** —que es el otro caso que planteaste— el criterio es
+que la app lo note antes que vos:
+
+- **Chequeo con canario.** Verificar no es pedir la home: es re-consultar **un SKU
+  que ya tenés vinculado** y comprobar que el precio se parsea. Si además cambió
+  más de un X% configurable, lo marca para que lo mires; puede ser aumento real o
+  puede ser que el parser ahora lee otro número.
+- **Nunca por un solo fallo.** Un timeout no es una fuente muerta: hace falta
+  reintento con *backoff* y un contador de fallos consecutivos. El estado pasa a
+  *Degradada* y solo después de N fallos a *Caída*.
+- **Pausar, nunca borrar.** Una fuente caída se pausa y deja de consultarse, pero
+  **su histórico de precios queda intacto** y los presupuestos que la usaron
+  siguen siendo auditables. Quitar una fuente es una acción explícita tuya, con
+  confirmación, y tampoco borra el histórico.
+- **Degradación a LINK con un clic.** Si el scraping de Casa Manrique se rompe,
+  el camino corto es pasarla a LINK: perdés el automatismo, conservás la fuente y
+  el link. Mejor que perder el corralón.
+- **Al abrir un presupuesto**, si alguna fuente que usa está caída o tiene precios
+  viejos, lo dice arriba, no en un log.
+
+### Fuentes de referencia vs. fuentes propias
+
+Tu idea de separar los dos tipos es correcta y conviene que esté en el modelo:
+
+- **Referencia** (Easy, Sodimac, Colorshop, MercadoLibre): nacionales, catálogo
+  amplio, buenas para **descubrir** insumos y para tener banda de consenso. Vienen
+  precargadas con la app.
+- **Propias** (tus corralones): son las que **le compras**. Son las que mandan en
+  el precio del presupuesto, y por eso la `fuente_preferida` de §7 normalmente va
+  a apuntar acá.
+
+En el modelo de datos, `fuente` gana tres campos: `tipo` (referencia / propia),
+`zona`, y `nivel` (automatica / html / link), más los de salud: `ultimo_ok`,
+`ultimo_error`, `fallos_consecutivos`, `estado`.
+
+**El `precios.csv` de §9 pasa a ser el informe más interesante de los cuatro**,
+porque ahí va la comparativa completa con una columna de link por fila. Lo abrís
+en Sheets, los links son clickeables, y verificás el presupuesto entero sin abrir
+la app.
+
+### Sobre el scraping HTML, ahora que son tres de cinco
+
+Tres de tus cinco corralones quedan en nivel HTML. Eso sube bastante la apuesta
+del adapter genérico, que en la revisión anterior era prioridad 4 y casi
+descartable. Dos consecuencias honestas:
+
+- **Se va a romper, y con frecuencia.** Un rediseño de sitio lo rompe. Por eso el
+  canario y la degradación a LINK son parte del diseño y no un extra.
+- **Los selectores van en configuración, no en código.** Cada fuente HTML guarda
+  sus selectores CSS (contenedor del producto, nombre, precio, link) como datos
+  editables. Así, cuando un sitio cambia, se arregla sin recompilar la app. En el
+  panel, el engranaje de una fuente HTML abre esos selectores con un botón de
+  prueba al lado.
+
+---
+
+## 9. Presupuesto completo
 
 Elegiste el alcance formal, así que el cálculo tiene dos niveles:
 
@@ -467,7 +645,7 @@ Dos detalles que importan:
 
 ---
 
-## 9. El informe: CSV
+## 10. El informe: CSV
 
 El informe principal es **CSV**, importable en Excel y Google Sheets. Vale la pena
 no exportar un solo archivo sino **cuatro**, porque son cuatro cosas distintas:
@@ -497,7 +675,7 @@ PDF con carátula queda como mejora posterior; no está en el camino crítico.
 
 ---
 
-## 10. El flujo de uso completo
+## 11. El flujo de uso completo
 
 1. **Abrir** el plano. La app lee `$INSUNITS` y propone las unidades.
 2. **Calibrar escala**: clic en dos puntos de una cota conocida, escribir la medida
@@ -532,7 +710,7 @@ Qué extrae `ezdxf` por tipo de medición:
 
 ---
 
-## 11. Roadmap
+## 12. Roadmap
 
 Cada etapa termina en algo que **se puede abrir y probar**. Estimaciones asumiendo
 trabajo de a ratos, no full-time.
@@ -549,12 +727,14 @@ trabajo de a ratos, no full-time.
 | 7 | **Precios: adapters VTEX + WooCommerce** | **Busca "cemento" en las 7 fuentes, muestra candidatos, vinculás, guarda precio con fecha** | **1-1,5 sem** |
 | 8 | Normalización y conversión | Factor de conversión por vínculo, extracción de peso/bulto del nombre, $/kg correcto | 4-5 d |
 | 9 | **Comparativa y atípicos** | **Banda de mediana+IQR por insumo, clasificación de fuera-de-banda, "dividir por pallet", fuente preferida** | **1 sem** |
-| 10 | Precios: actualización | Refresco por SKU, caché con TTL, rate limit, histórico, re-vinculación | 1 sem |
-| 11 | Coeficiente de impacto | GG, beneficio, impuestos con fecha de vigencia; presupuesto final | 4-5 d |
-| 12 | IFC | Abre un IFC de Revit y lee `BaseQuantities` directo, sin medir | 1-1,5 sem |
-| 13 | MercadoLibre | OAuth, manejo de token y 429 | 4-5 d |
-| 14 | DWG | Diálogo de conversión; ODA automático **si la licencia lo permite** | 2-4 d |
-| 15 | **Instalable** | **`.exe` + instalador Inno Setup que corre en una PC sin Python** | 4-6 d |
+| 10 | **Panel de fuentes** | **Lista con estado y link, alta por URL con autodetección, verificar, pausar, quitar, degradar a LINK** | **1 sem** |
+| 10b | Fuentes nivel LINK y HTML | Carga manual con link y fecha; adapter HTML con selectores editables y botón de prueba | 1-1,5 sem |
+| 11 | Precios: actualización y salud | Refresco por SKU, canario, caché con TTL, rate limit, histórico, re-vinculación | 1 sem |
+| 12 | Coeficiente de impacto | GG, beneficio, impuestos con fecha de vigencia; presupuesto final | 4-5 d |
+| 13 | IFC | Abre un IFC de Revit y lee `BaseQuantities` directo, sin medir | 1-1,5 sem |
+| 14 | MercadoLibre | OAuth, manejo de token y 429 | 4-5 d |
+| 15 | DWG | Diálogo de conversión; ODA automático **si la licencia lo permite** | 2-4 d |
+| 16 | **Instalable** | **`.exe` + instalador Inno Setup que corre en una PC sin Python** | 4-6 d |
 
 **Por qué el CSV (etapa 6) va antes que los precios (etapa 7):** apenas tengas
 cómputo y catálogo, un CSV de cantidades ya es útil por sí solo —lo abrís en
@@ -568,7 +748,7 @@ invertir en el resto.
 
 ---
 
-## 12. Riesgos
+## 13. Riesgos
 
 | Riesgo | Impacto | Mitigación |
 |---|---|---|
@@ -581,7 +761,12 @@ invertir en el resto.
 | **Descartar atípicos automáticamente** | **Alto** | Tiraría la mejor oferta. Los fuera-de-banda se **clasifican**, nunca se descartan |
 | **Precio en unidades mínimas (Woo)** | **Alto** | `729979` con `minor_unit: 2` es $7.299,79. Dividir por `10**minor_unit`; test unitario obligatorio |
 | **Comparar insumos distintos** | Medio | Cemento blanco vs portland no son el mismo insumo. La banda se calcula **debajo** del vínculo confirmado |
-| **Scraping de Sodimac se rompe** | Bajo | Es prioridad 4; con 7 fuentes de API pública ya no es necesaria |
+| **Mezclar zonas en una banda** | **Alto** | Merlino (Córdoba) está 13% arriba de la banda AMBA. La banda de consenso se calcula **por zona**, o no sirve |
+| **Decidir el nivel por la huella de plataforma** | **Alto** | Edificor es VTEX sin API; Casa Manrique es Woo con la REST apagada. El nivel se decide por **una búsqueda real que devuelva precio** |
+| **Falso negativo al verificar** | Medio | VTEX responde **206**, no 200: exigir 200 descartaba a Merlino. Aceptar cualquier 2xx y **mostrar siempre el motivo** del fallo |
+| **Marcar una fuente muerta por un timeout** | Medio | Reintento con backoff y contador de fallos consecutivos; *Degradada* antes de *Caída*; pausar, nunca borrar |
+| **Scraping HTML en 3 de 5 corralones propios** | **Alto** | Selectores como datos editables, canario que avisa, y degradación a LINK con un clic |
+| **Scraping de Sodimac se rompe** | Bajo | Es prioridad 4; con las fuentes de API pública ya no es necesaria |
 | Entidades HTML en nombres | Bajo | `&#8211;` en WooCommerce: `html.unescape()` al ingestar |
 | **Bloqueo por IP o reCAPTCHA** | Medio | Caché, rate limit, UA honesto, actualización manual y no automática. Easy ya tiene reCAPTCHA en el sitio público, aunque no en `/api/` |
 | **MercadoLibre cambia el OAuth** | Medio | Adapter aislado; si se cae, el resto de las fuentes sigue |
@@ -593,26 +778,30 @@ invertir en el resto.
 
 ---
 
-## 13. Lo que queda por definir
+## 14. Lo que queda por definir
 
 1. **¿Qué rubros usás realmente?** Arrancar con tu lista y 15-20 ítems típicos vale
    mucho más que un catálogo genérico. Es lo que más acelera las etapas 4-5.
 2. **¿Qué jurisdicción?** Para la alícuota de ingresos brutos y si aplica IVA 10,5 %
    de obra de vivienda.
-3. **¿Qué corralones usás vos, y de qué zona?** Es la pregunta de mayor
-   rendimiento de toda la lista. Pasame los sitios y los corro por
-   `tools/relevar_fuentes.py`: si alguno es VTEX o WooCommerce, entra como fuente
-   con **costo cero** y es mucho mejor que Easy para tu caso, porque es el
-   proveedor al que realmente le comprás. Las 7 fuentes que encontré son un punto
-   de partida, no tu lista definitiva.
-4. **¿Comprás por pallet o por unidad?** Define si la app tiene que priorizar la
+3. **¿Trabajás en Córdoba?** Tres de los cinco corralones que nombraste son
+   cordobeses y Merlino está 13% arriba de la banda de AMBA. Si es así, las
+   fuentes de referencia nacionales sirven para descubrir insumos pero **no para
+   el precio**, y conviene que la zona por defecto sea Córdoba.
+4. **¿Hay más corralones que uses?** Pasame los sitios y los corro por
+   `tools/verificar_fuente.py`. Cada uno que resulte AUTOMÁTICA entra con costo
+   cero.
+5. **Edificor y Terralon: ¿les compras seguido?** Edificor quedó en nivel LINK y
+   Terralon en HTML frágil (Magento). Si son proveedores importantes para vos,
+   vale invertir en el adapter HTML; si son marginales, con LINK alcanza.
+6. **¿Comprás por pallet o por unidad?** Define si la app tiene que priorizar la
    venta por volumen (13% más barata en cemento) o el precio unitario.
-5. **¿Unidades de tus planos?** Metros, centímetros o milímetros cambia los
+7. **¿Unidades de tus planos?** Metros, centímetros o milímetros cambia los
    defaults, aunque la calibración lo resuelve igual.
 
 ---
 
-## 14. Próximo paso concreto
+## 15. Próximo paso concreto
 
 Conseguir **un DXF real tuyo** y correr:
 
@@ -629,8 +818,9 @@ están cerrados.
 Y para ver las fuentes de precios con tus propios ojos, sin instalar nada:
 
 ```bash
-python3 tools/relevar_fuentes.py      # que plataforma usa cada sitio
-python3 tools/comparar_precios.py     # la canasta comparada, con atipicos
+python3 tools/relevar_fuentes.py                      # plataforma de cada sitio
+python3 tools/comparar_precios.py                     # canasta comparada, con atipicos
+python3 tools/verificar_fuente.py merlinosrl.com.ar   # nivel de UNA fuente
 ```
 
 Estas dos URLs devuelven JSON directo en el navegador:
@@ -640,7 +830,14 @@ https://www.easy.com.ar/api/catalog_system/pub/products/search?ft=ladrillo%20hue
 https://laeconomica.com.ar/wp-json/wc/store/v1/products?search=cemento&per_page=5
 ```
 
-**Lo más útil que podés hacer ahora** es mandarme los sitios de tus corralones
-para pasarlos por `relevar_fuentes.py`. Si alguno corre WooCommerce —y muchos
-corralones argentinos lo hacen— ya tenés una fuente de precios de tu proveedor
-real, sin escribir una línea de scraping.
+**Lo más útil que podés hacer ahora**, además del DXF, es pasar tus corralones
+por el verificador:
+
+```bash
+python3 tools/verificar_fuente.py casamanrique.com.ar
+python3 tools/verificar_fuente.py <otro-corralon-tuyo>
+```
+
+Te dice en qué nivel queda cada uno y te muestra los precios que leyó, así ves si
+leyó bien. Es exactamente lo que va a hacer el botón "Verificar" del panel, y
+confirma hoy si la lista de fuentes que vas a usar alcanza.
