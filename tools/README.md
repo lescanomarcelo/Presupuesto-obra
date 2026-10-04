@@ -8,7 +8,14 @@ relevamiento documentado en `PLAN.md` §6 y §7.
 python3 tools/relevar_fuentes.py                      # plataforma de cada sitio de una lista
 python3 tools/comparar_precios.py                     # canasta comparada, con atipicos
 python3 tools/verificar_fuente.py merlinosrl.com.ar   # nivel de UNA fuente
+python3 tools/prueba_cadena.py                        # computo -> APU -> desperdicio -> precio
+python3 tools/prueba_ifc.py                           # IFC con y sin BaseQuantities
 ```
+
+`prueba_ifc.py` necesita `pip install ifcopenshell numpy`. Construye modelos IFC
+de prueba y verifica los dos caminos de lectura: las BaseQuantities exportadas y
+el calculo desde la geometria. Confirma que sin BaseQuantities el volumen sale
+igual y exacto, con los huecos de ventanas descontados.
 
 `verificar_fuente.py` es el prototipo del boton "Verificar" del panel de fuentes
 (PLAN.md §8). Toma un dominio, prueba con y sin `www.`, prueba los adapters en

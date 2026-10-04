@@ -42,7 +42,7 @@ problema son Python-first y no tienen equivalente maduro en otro lenguaje.
 |---|---|---|
 | Lectura DXF | `ezdxf` 1.4.x | Entidades, capas, bloques, textos, unidades |
 | **Visor del plano** | `ezdxf.addons.drawing` (`PyQtBackend`, `qtviewer.py`) | **Visor CAD con pan/zoom ya implementado** |
-| Lectura IFC | `ifcopenshell` 0.9 | Objetos BIM con áreas y volúmenes ya calculados |
+| Lectura IFC | `ifcopenshell` 0.9.0 | **Probado:** cantidades, y kernel de geometría para calcularlas cuando faltan (§3) |
 | Geometría | `shapely` | Áreas, cierre de contornos, validación |
 | Base de datos | SQLite + SQLAlchemy | Local, un archivo, cero servidor |
 | **HTTP precios** | `httpx` | Async, timeouts y reintentos decentes |
@@ -64,10 +64,40 @@ Formato abierto. `ezdxf` lo lee nativamente (R12 a R2018) y tiene
 `recover.readfile()` para archivos corruptos, que en la práctica son muchos. Todo
 el motor de medición se desarrolla contra DXF.
 
-### IFC — prioridad 2, es el caso *ideal*
-Un IFC de Revit no tiene líneas: tiene **muros, losas y pisos como objetos**, con
-sus `BaseQuantities` (área, volumen, longitud) **ya calculadas por Revit**. Acá el
-cómputo no se mide, **se lee**. Máxima precisión, mínima intervención.
+### IFC — probado, y es el camino más confiable de los tres
+Un IFC de Revit no tiene líneas: tiene **muros, losas y pisos como objetos**. Acá
+el cómputo no se mide, **se lee**.
+
+**Lo probé** (`tools/prueba_ifc.py`), porque era el supuesto más grande que
+quedaba en pie. Hay dos caminos y los dos funcionan:
+
+| | Qué hace | Resultado medido |
+|---|---|---|
+| **Plan A** | Leer las `BaseQuantities` que exportó Revit | Devuelve `{Length: 4.0, NetSideArea: 10.4, NetVolume: 2.08}` |
+| **Plan B** | Calcular desde la geometría del sólido | **Volumen exacto, error 0,0000 %** |
+
+**Y lo más importante: el Plan B descuenta los huecos.** Un muro de
+4,00 × 0,20 × 2,60 con una ventana de 1,20 × 1,10 da **1,8160 m³**, que es
+exactamente el volumen neto, con error 0,0000 %. El área lateral baja de 10,40 a
+9,08 m², que es justo lo que hay que revocar.
+
+> **El riesgo que había marcado era mucho menor de lo que pensaba.** Si el IFC
+> viene sin `BaseQuantities` —porque quien exportó no tildó la opción en Revit—
+> no se rompe nada: se calcula desde la geometría y se obtiene el mismo número,
+> exacto. No hay que pedirle a nadie que re-exporte.
+
+**La trampa está en elegir la función correcta** de `ifcopenshell.util.shape`:
+
+| Función | Devuelve | Para qué |
+|---|---|---|
+| `get_volume` | 2,0800 m³ | Hormigón, mampostería por volumen |
+| **`get_side_area`** | **10,40 m²** | **Revoque, pintura. Descuenta huecos** |
+| `get_area` | **23,44 m²** | Superficie de las 6 caras. **Usarla para revoque sobrevalúa 2,25x** |
+| `get_footprint_area` | 0,80 m² | Huella en planta |
+| `get_footprint_perimeter` | poco confiable | Pasó de 8,40 a 11,20 solo por agregar una ventana **arriba** de la huella. No usarla |
+
+Es el mismo tipo de error que el `content` vs `x m²` de Ferrocons (§8): la
+librería te da varios números parecidos y uno solo es el que querés.
 
 ### DWG — prioridad 3, con un problema de licencia
 DWG es cerrado; `ezdxf` **no lo lee**. Opciones:
@@ -1081,7 +1111,7 @@ trabajo de a ratos, no full-time.
 | 10 | **Panel de fuentes + niveles HTML y LINK** | **Lista con estado y link, alta por URL con autodetección, verificar, pausar, degradar. Motor de scraping con editor de selectores y botón de prueba. Carga manual con link y fecha** | **2-2,5 sem** |
 | 11 | Precios: actualización y salud | Refresco por SKU, canario, caché con TTL, rate limit, histórico, re-vinculación | 1 sem |
 | 12 | Coeficiente de impacto y USD | GG, beneficio, impuestos con fecha de vigencia; total en dólares vía `dolarapi` | 5-6 d |
-| 13 | IFC | Abre un IFC de Revit y lee `BaseQuantities` directo, sin medir | 1-1,5 sem |
+| 13 | IFC | Abre un IFC real, lee `BaseQuantities` y cae a geometría cuando faltan (ya probado en `tools/prueba_ifc.py`) | 1 sem |
 | 14 | MercadoLibre | OAuth, manejo de token y 429 | 4-5 d |
 | 15 | DWG | Diálogo de conversión; ODA automático **si la licencia lo permite** | 2-4 d |
 | 16 | **Instalable** | **`.exe` + instalador Inno Setup que corre en una PC sin Python** | 4-6 d |
@@ -1142,6 +1172,9 @@ invertir en el resto.
 | **MercadoLibre cambia el OAuth** | Medio | Adapter aislado; si se cae, el resto de las fuentes sigue |
 | **Licencia de ODA** para DWG | Medio | v1 pide DXF; conversión automática es opcional |
 | **CSV mal interpretado por Excel** | Medio | Separador `;` + UTF-8 con BOM, presets por destino |
+| **Usar `get_area` para revoque en IFC** | **Alto** | Devuelve la superficie de las 6 caras: 23,44 m² contra 10,40 reales, **2,25x de más**. Usar `get_side_area` (§3) |
+| `get_footprint_perimeter` de IFC | Medio | Cambió de 8,40 a 11,20 solo por agregar una ventana arriba de la huella. No usarla para zócalos ni perímetros |
+| IFC sin `BaseQuantities` | **Bajo** (era alto) | **Probado:** se calcula desde la geometría con error 0,0000 %, y descuenta huecos. No bloquea |
 | Entidades ACIS / 3D | Bajo | `ezdxf` no las renderiza (limitación documentada); no son cómputo 2D |
 | Bloques anidados y XREFs | Medio | Resolver recursivo con tope; avisar cuando falta el XREF externo |
 | Precios desactualizados | Medio | Fecha y hora obligatorias, aviso de antigüedad en el informe |
@@ -1232,6 +1265,7 @@ vuelva y para saber qué está verificado y qué era suposición.
 | 8 | **Conclusión apresurada: "Terralon no tiene web"** — probé `terralon.com.ar` y `www.terralon.com` (este último está en venta) pero **no** `www.terralon.com.ar`, que es el sitio real, en Magento | Ídem | ✅ corregido; el verificador ahora prueba con y sin `www.` |
 | 9 | **Faltaba el desperdicio** — ninguna versión anterior lo tenía. El presupuesto salía corto siempre | Revisión de apps del rubro (§9) | ✅ agregado al modelo y al roadmap |
 | 10 | **Faltaba el redondeo a unidad de compra** — se calculaban 37,4 bolsas de cemento | Ídem | ✅ agregado |
+| 13 | **Riesgo de IFC sobrevalorado** — marqué "IFC sin BaseQuantities" como el supuesto más grande del plan. Probado, el cálculo por geometría da error **0,0000 %** y descuenta huecos: el riesgo es bajo | `tools/prueba_ifc.py` | ✅ reclasificado a riesgo bajo |
 | 12 | **`price_wo_taxes` recomendado como costo neto** (revisiones 2 a 5) — deriva de `ListPrice`, así que en un producto en oferta sobrevalúa el neto hasta **43 %**. Verificado sobre 25 productos de Easy | Verificación de la alícuota por fuente | ✅ corregido: neto = `Price` / (1 + IVA) |
 | 11 | **Faltaba el layout en `medicion`** — el plan trataba el DXF como si hubiera un solo lugar donde medir, habilitando doble conteo entre planta y corte | Ídem | ✅ agregado |
 
@@ -1250,10 +1284,15 @@ Conviene tener claro el límite, porque todo el módulo de precios se apoya en e
 - Que los 3 sitios HTML sirven el precio desde el servidor, sin JavaScript
 - Que ninguno de los 3 tiene JSON-LD `Product`
 - Que `ezdxf` incluye `qtviewer.py` y el add-on `drawing` (documentación oficial)
+- Que `ifcopenshell` 0.9.0 instala desde pip con el kernel de geometría incluido,
+  lee `Qto_WallBaseQuantities` y, cuando faltan, calcula el volumen **exacto**
+  desde el sólido, **descontando los huecos de ventanas** (`tools/prueba_ifc.py`)
 
 **No verificado, es suposición razonable:**
-- Que `ifcopenshell` lee las `BaseQuantities` de un IFC exportado de Revit **sin
-  retoques**. No probé un IFC real. Es el supuesto más grande que queda en pie
+- Que un IFC **real de Revit**, con cientos de elementos, clases heredadas y
+  `IfcBuildingElementProxy`, se comporte como los modelos de prueba que construí.
+  Lo que sí está probado es el mecanismo: lectura de cantidades y cálculo por
+  geometría con huecos descontados
 - Los porcentajes de desperdicio de la tabla de §9: son valores de manual, hay
   que ajustarlos a tu práctica
 - Que la licencia del ODA File Converter permita redistribuir el flujo DWG
