@@ -113,12 +113,32 @@ La prueba de que la geometría es la correcta es contundente: el muro
 **la suma de la geometría de los 11 pedazos da exactamente 0,4127**. Los pedazos
 reparten el volumen; el Qto lo repite.
 
-> **Por eso se invierte la regla.** La geometría es la fuente primaria del
-> cómputo, y el `BaseQuantities` es el **control de consistencia**. Cuando los dos
-> no coinciden, el que está mal es casi siempre el Qto.
->
-> Y la detección es simple y obligatoria: **si varios elementos comparten nombre
-> y valor de cantidad, hay duplicación.** La app agrupa, avisa y usa la geometría.
+### Y no hay heurística que arregle el Qto
+
+Mi primera reacción fue deduplicar: si varios elementos comparten nombre y
+cantidad, contarla una vez. **Probé esa heurística y también la de agrupar por
+`Tag`** (el id del elemento en Revit, que es el discriminador que parecía
+correcto). **Las dos fallan**, porque arreglan una clase y rompen otra:
+
+| Clase | Ejemplares | Tags | Geometría | Qto por ejemplar | Qto por Tag |
+|---|---|---|---|---|---|
+| `IfcWall` | 48 | 7 | **1,542** | 12,795 (+730 %) | 1,630 (+5,7 %) |
+| `IfcWallStandardCase` | 132 | 34 | **2,183** | 2,183 (**0,0 %**) | 0,611 (−72 %) |
+| `IfcColumn` | 1.383 | 309 | **3,266** | 3,270 (+0,1 %) | 0,774 (−76 %) |
+
+**Los dos casos de muro son muros partidos y se ven idénticos en el archivo.** En
+`IfcWall` Revit **repitió** el Qto en cada pedazo; en `IfcWallStandardCase` lo
+**repartió**. No hay nada en la estructura del IFC que permita distinguirlos: solo
+se nota comparando contra la geometría.
+
+> **De ahí la regla, que queda simple:** el cómputo usa **la geometría, siempre**.
+> El `BaseQuantities` se lee y se muestra **como control informativo**, y cuando
+> no coincide se avisa — pero **no se intenta repararlo**. Cualquier heurística de
+> deduplicación va a romper alguna clase.
+
+Un detalle más al leer el Qto para el control: hay que aceptar **`NetVolume` o,
+si falta, `GrossVolume`**. En `IfcColumn` faltan **265 de 1.383** `NetVolume`, y
+sin el respaldo el control da −35 % y parece un error que no existe.
 
 Un beneficio extra del mismo camino: los **29 `IfcBuildingElementProxy`** del
 modelo (elementos sin clasificar) tienen `BaseQuantities` vacío pero **0,664 m³ de
@@ -1350,7 +1370,9 @@ riesgo ya está medido.
 | **Usar `get_side_area` para revoque en IFC** | **Alto** | Depende de la orientación: en un muro girado 90° da 0,74 m² contra 8,56 reales, **error de 11x**, y la mitad de los muros están girados. Usar `2 × get_max_side_area` (§3) |
 | **Usar `get_area` para revoque en IFC** | **Alto** | Devuelve la superficie de las 6 caras: 23,44 m² contra 10,40 reales, **2,25x de más** (§3) |
 | **`SIGSEGV` del kernel de geometría** | **Alto** | Si el objeto `file` se recolecta mientras se usan sus entidades, el proceso muere **sin excepción atrapable**. Retener el `file`, y correr la geometría IFC **en subproceso** (§3) |
-| **Sumar `BaseQuantities` por ejemplar** | **Alto** | Medido en un modelo real: Revit parte los muros y copia el Qto completo en cada pedazo. 48 ejemplares con 7 valores distintos dieron **+730 %**. Agrupar por (nombre, cantidad), avisar, y usar la geometría (§3) |
+| **Computar con `BaseQuantities`** | **Alto** | Medido en un modelo real: en `IfcWall` el Qto está repetido por pedazo (**+730 %**) y en `IfcWallStandardCase` repartido (0 %), y se ven iguales en el archivo. Computar **siempre** con geometría; el Qto es control informativo (§3) |
+| **Intentar "arreglar" el Qto deduplicando** | **Alto** | Deduplicar por (nombre, valor) o por `Tag` arregla los muros y rompe los pilares (−76 %). No hay heurística válida (§3) |
+| **Leer solo `NetVolume`** | Medio | Faltan en 265 de 1.383 pilares. Hay que aceptar `NetVolume` o `GrossVolume` (§3) |
 | **No aplicar `transformation.matrix`** | **Alto** | `geometry.verts` es local: sin la matriz todo se apila en el origen. Medido: 19 pilotes en 0,20 × 0,20 m y la planta en 15,24 × 8,75 en vez de 9,95 × 11,41. Los volúmenes **no** se ven afectados, así que el bug pasa desapercibido (§3) |
 | **Depender de `ifcopenshell.draw`** | Medio | Contra un IFC real de Revit muere sin traza, o lanza `TypeError`/`AttributeError` según el filtro. La planta se construye con shapely (§3) |
 | **No pedir la representación `Body`** | **Alto** | `create_shape` sin representación falla en todos los muros de Revit, porque intenta procesar el `Axis`. Y `geom.iterator` devuelve geometría **parcial en silencio**: 3,72 m³ contra 1,54 reales (§3) |
@@ -1376,9 +1398,12 @@ riesgo ya está medido.
    de ingresos brutos por jurisdicción.
 4. **Los dos formatos pesan igual** — confirmado. IFC pasó a la etapa 6 para que
    la abstracción se pruebe con los dos lectores antes de construir encima.
-   Pendiente menor: cuando tengas un IFC real de Revit, pasarlo por
-   `tools/prueba_ifc.py` adaptado, para confirmar el comportamiento a escala
-   (cientos de elementos, `IfcBuildingElementProxy`, clases heredadas).
+   **El camino IFC quedó validado con un modelo real** (Villa Giardino, Revit
+   2023, 2.274 elementos): cómputo total **15,646 m³** por geometría, planta
+   navegable confirmada por el usuario. Lo que queda abierto es de UI, no de
+   lectura: **ese modelo tiene 18 niveles y la mayoría son auxiliares de armado**
+   (corta fuegos, dinteles, umbrales), así que agrupar por nivel no sirve como
+   viene. Hay que dejar elegir qué niveles son reales.
 5. **Zona: Córdoba** — confirmado. Es la zona por defecto. Las fuentes
    nacionales quedan como referencia para descubrir insumos, no para el precio.
 6. **¿Hay más corralones cordobeses que uses?** Pasame los sitios y los corro por
@@ -1451,6 +1476,7 @@ vuelva y para saber qué está verificado y qué era suposición.
 | 8 | **Conclusión apresurada: "Terralon no tiene web"** — probé `terralon.com.ar` y `www.terralon.com` (este último está en venta) pero **no** `www.terralon.com.ar`, que es el sitio real, en Magento | Ídem | ✅ corregido; el verificador ahora prueba con y sin `www.` |
 | 9 | **Faltaba el desperdicio** — ninguna versión anterior lo tenía. El presupuesto salía corto siempre | Revisión de apps del rubro (§9) | ✅ agregado al modelo y al roadmap |
 | 10 | **Faltaba el redondeo a unidad de compra** — se calculaban 37,4 bolsas de cemento | Ídem | ✅ agregado |
+| 19 | **Heurística de deduplicar el Qto** — propuse agrupar por (nombre, cantidad) para corregir el conteo duplicado. Probada contra el modelo real, arregla los muros (+5,7 %) y rompe los pilares (−76 %) y los muros estándar (−72 %). No hay heurística válida: se computa con geometría y punto | `tools/analizar_ifc.py` sobre Villa Giardino | ✅ eliminada |
 | 18 | **`ifcopenshell.draw` dado por bueno** — funcionó con un modelo sintético de 4 muros y falla de tres formas distintas con el IFC real. La planta se construye con shapely | `tools/planta_ifc.py` | ✅ reemplazado |
 | 17 | **Faltaba aplicar `transformation.matrix`** — `geometry.verts` es local; sin la matriz la planta apila todo en el origen. No afecta a los volúmenes, así que es un bug silencioso | Ídem | ✅ corregido |
 | 16 | **"El cómputo no se mide, se lee"** — el plan presentaba las `BaseQuantities` como la fuente y la geometría como respaldo. Con un modelo real es al revés: sumar el Qto por ejemplar dio **+730 %** en los muros | `tools/analizar_ifc.py` sobre el IFC de Villa Giardino | ✅ invertido: la geometría es la fuente, el Qto es el control |
@@ -1493,6 +1519,10 @@ Conviene tener claro el límite, porque todo el módulo de precios se apoya en e
   416 de 416 elementos en 2,6 s con `ifc:guid` por path
 - Que `geometry.verts` está en coordenadas **locales** y la posición hay que
   aplicarla desde `transformation.matrix`
+- Que **el usuario confirmó que la planta generada se parece a su modelo**, con lo
+  que el camino IFC queda validado de punta a punta: lectura, cantidades,
+  geometría con huecos, posición y planta navegable
+- Que ninguna heurística de deduplicación del Qto funciona para todas las clases
 
 **No verificado, es suposición razonable:**
 - Que un IFC **real de Revit**, con cientos de elementos, clases heredadas y

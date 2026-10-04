@@ -22,12 +22,20 @@ DOS COSAS APRENDIDAS CON UN MODELO REAL DE REVIT (Villa Giardino):
    create_shape(settings, muro) sin mas falla con "Failed to process shape"
    porque intenta procesar el Axis.
 
-2. Cuando Revit PARTE un muro en varios IfcWall, cada pedazo se lleva el Qto
-   ENTERO del muro original. Sumar el Qto de cada ejemplar multiplica la
-   cantidad por el numero de pedazos: medido, 12,79 m3 en vez de 1,54, un
-   +730%. La geometria de los pedazos SI suma bien (11 pedazos sumaron
-   exactamente el Qto unico del muro). Por eso este script informa las tres
-   sumas y avisa cuando detecta Qto repetido.
+2. El Qto de Revit NO es confiable, y no hay regla que lo arregle. En el MISMO
+   archivo:
+     - IfcWall: 48 ejemplares de 7 Tags, el Qto esta REPETIDO en cada pedazo.
+       Sumar por ejemplar da 12,79 m3 cuando lo real es 1,54: +730%.
+     - IfcWallStandardCase: 132 ejemplares de 34 Tags, el Qto esta REPARTIDO
+       por pedazo. Sumar por ejemplar da el valor correcto.
+   Los dos casos son muros partidos y se ven igual en la estructura del
+   archivo. Probe deduplicar por (nombre, valor) y por Tag: cada heuristica
+   arregla una clase y rompe la otra (por Tag: muros +5,7% pero pilares -76%).
+   Por eso este script usa la GEOMETRIA como respuesta y el Qto solo como
+   control, sin intentar repararlo.
+
+3. Al leer el Qto hay que aceptar NetVolume O GrossVolume. En IfcColumn faltan
+   265 de 1383 NetVolume; con el respaldo, el total vuelve a coincidir.
 """
 from __future__ import annotations
 import argparse, collections, sys, time
@@ -153,11 +161,10 @@ def main() -> int:
             print(f"    {c:30} {n:,}")
 
     if a.geom:
-        print(f"\n  VOLUMEN POR TRES CAMINOS (hasta {a.limite} elementos por clase)")
-        print(f"    {'CLASE':22} {'n':>5} {'grupos':>6} {'A) Qto x n':>11} "
-              f"{'B) Qto x grupo':>14} {'C) geometria':>12}")
-        print("    " + "-" * 78)
-        sospechosas = []
+        print(f"\n  VOLUMEN: la geometria es la respuesta, el Qto es el control")
+        print(f"    {'CLASE':24} {'n':>5} {'GEOMETRIA m3':>13} {'Qto (control)':>14} {'dif':>8}")
+        print("    " + "-" * 74)
+        discrepan = []
         for clase in CLASES_INTERES:
             try:
                 els = f.by_type(clase, include_subtypes=False)[:a.limite]
@@ -165,30 +172,34 @@ def main() -> int:
                 continue
             if not els:
                 continue
-            grupos: dict = {}
-            sa = sc = 0.0
+            sq = sg = 0.0
+            sin_net = 0
             for e in els:
+                # NetVolume o, si falta, GrossVolume: en IfcColumn faltan 265 de 1383
                 vq = cantidad(e, "NetVolume", "GrossVolume")
+                if cantidad(e, "NetVolume") is None:
+                    sin_net += 1
                 if vq is not None:
-                    vq *= fac ** 3
-                    sa += vq
-                    grupos.setdefault((e.Name, round(vq, 8)), []).append(e)
-                sc += volumen_geom(e, fac)
-            sb = sum(k[1] for k in grupos)
-            if sa == 0 and sc == 0:
+                    sq += vq * fac ** 3
+                sg += volumen_geom(e, fac)
+            if sq == 0 and sg == 0:
                 continue
-            print(f"    {clase:22} {len(els):>5} {len(grupos):>6} {sa:>11.3f} {sb:>14.3f} {sc:>12.3f}")
-            if sc > 1e-9 and sa > 0 and abs(sa - sc) / sc > 0.05:
-                sospechosas.append((clase, len(els), len(grupos), sa, sb, sc))
+            dif = f"{(sq-sg)/sg*100:+.1f}%" if sg > 1e-9 and sq > 0 else "-"
+            print(f"    {clase:24} {len(els):>5} {sg:>13.3f} {sq:>14.3f} {dif:>8}"
+                  + (f"   ({sin_net} sin NetVolume)" if sin_net else ""))
+            if sg > 1e-9 and sq > 0 and abs(sq - sg) / sg > 0.05:
+                tags = len({e.Tag for e in els})
+                discrepan.append((clase, len(els), tags, sq, sg))
         print(f"\n    medidos en {time.time()-t0:.1f} s")
-        if sospechosas:
-            print(f"\n  !! EL Qto NO COINCIDE CON LA GEOMETRIA en estas clases:")
-            for clase, n, ng, sa, sb, sc in sospechosas:
-                print(f"     {clase}: {n} ejemplares pero solo {ng} valores distintos de Qto.")
-                print(f"       Revit partio los elementos y copio el Qto completo en cada pedazo.")
-                print(f"       Sumar por ejemplar da {sa:.3f} m3 cuando lo real es {sc:.3f} m3 "
-                      f"({(sa-sc)/sc*100:+.0f}%).")
-                print(f"       USAR LA GEOMETRIA (columna C), no el Qto.")
+        if discrepan:
+            print(f"\n  !! El Qto no coincide con la geometria en:")
+            for clase, n, tags, sq, sg in discrepan:
+                print(f"     {clase}: {n} ejemplares, {tags} Tags de Revit.")
+                print(f"       Qto {sq:.3f} m3 contra {sg:.3f} m3 de geometria ({(sq-sg)/sg*100:+.0f}%).")
+            print("     Revit reparte el Qto de forma inconsistente entre los pedazos de un")
+            print("     elemento partido: en una clase lo repite y en otra lo divide, y las dos")
+            print("     se ven igual en el archivo. NO se puede reparar deduplicando.")
+            print("     El computo usa la columna GEOMETRIA. Esta discrepancia es informativa.")
 
     print(f"\n  VEREDICTO")
     muros = len(f.by_type("IfcWall", include_subtypes=True))
