@@ -1418,44 +1418,62 @@ riesgo ya está medido.
 
 ## 16. Próximo paso concreto
 
-Conseguir **un DXF real tuyo** y correr:
+### El desarrollo pasa a local
+
+La app es de escritorio con Qt, así que **la etapa 1 —un visor que abra un DXF
+con pan/zoom— no se puede ejecutar ni ver en un contenedor sin pantalla.** Súmese
+que AutoCAD y Revit están en la máquina del usuario, y que el instalable de la
+etapa 16 usa PyInstaller e Inno Setup, que son herramientas de Windows.
+
+El repositorio se clona en la carpeta de trabajo local y desde ahí se trabaja;
+GitHub queda como remoto y respaldo:
 
 ```bash
-pip install "ezdxf[draw]"
-ezdxf view tu_plano.dxf     # visor incluido
+git clone https://github.com/lescanomarcelo/Presupuesto-obra.git .
+git checkout main
+python -m venv .venv && .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+**La división no es arbitraria, ya estaba en la arquitectura** (§4): `measure/`,
+`pricing/` y `budget/` son Python puro y testeable, así que se desarrollan y se
+prueban sin pantalla. Solo `ui/` necesita una máquina con Qt. Y las tareas de
+relevamiento y verificación —sondear corralones, probar librerías— salen más
+rápido en una sesión en la nube, como quedó demostrado.
+
+### Empezar por las etapas 0 y 0b
+
+Esqueleto del proyecto, y "proyecto = carpeta": abrir un plano crea la carpeta
+con el plano copiado y su hash, y la app lista y reabre proyectos. Son 4-6 días
+y dejan la base sobre la que se apoya todo lo demás.
+
+### Y entonces el DXF, que es el único riesgo sin medir
+
+De los dos lectores, **el DXF es el que todavía no se probó con nada real**, y
+concentra los dos riesgos más altos del plan: planos sin convención de capas y
+polilíneas no cerradas. Diez minutos con un plano propio los contesta:
+
+```bash
+ezdxf view tu_plano.dxf     # el visor que viene con la librería
 ezdxf info tu_plano.dxf     # versión, unidades, estadísticas
 ```
 
-Eso contesta en diez minutos las tres preguntas que más condicionan el plan: qué
-convención de capas tienen tus planos, si vienen escalados, y si los contornos
-están cerrados.
+Qué convención de capas tienen los planos, si vienen escalados, y si los
+contornos están cerrados.
 
-Y para ver las fuentes de precios con tus propios ojos, sin instalar nada:
+### Lo que ya no hace falta probar
 
-```bash
-python3 tools/relevar_fuentes.py                      # plataforma de cada sitio
-python3 tools/comparar_precios.py                     # canasta comparada, con atipicos
-python3 tools/verificar_fuente.py merlinosrl.com.ar   # nivel de UNA fuente
-```
+El camino IFC quedó validado de punta a punta con un modelo real
+(`ejemplos/villa-giardino/`), y las 8 fuentes de precios con API pública están
+relevadas y verificadas. Los valores de referencia del IFC están documentados
+como test de regresión.
 
-Estas dos URLs devuelven JSON directo en el navegador:
-
-```
-https://www.easy.com.ar/api/catalog_system/pub/products/search?ft=ladrillo%20hueco&_from=0&_to=9
-https://laeconomica.com.ar/wp-json/wc/store/v1/products?search=cemento&per_page=5
-```
-
-**Lo más útil que podés hacer ahora**, además del DXF, es pasar tus corralones
-por el verificador:
-
-```bash
-python3 tools/verificar_fuente.py casamanrique.com.ar
-python3 tools/verificar_fuente.py <otro-corralon-tuyo>
-```
-
-Te dice en qué nivel queda cada uno y te muestra los precios que leyó, así ves si
-leyó bien. Es exactamente lo que va a hacer el botón "Verificar" del panel, y
-confirma hoy si la lista de fuentes que vas a usar alcanza.
+Lo único que quedó abierto del lado IFC **es de interfaz, no de lectura**: el
+modelo real tiene **18 niveles y la mayoría son auxiliares de armado** —corta
+fuegos, dinteles, umbrales, "PARA LAMINA"— y solo uno es planta real. Agrupar el
+cómputo por nivel no sirve como viene: la app tiene que dejar marcar cuáles son
+niveles reales. Es un caso que el plan no contemplaba, porque asumía plantas de
+edificio convencionales.
 
 ---
 

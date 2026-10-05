@@ -1,0 +1,20 @@
+# Lectura de planos
+ezdxf[draw]>=1.4,<2        # DXF + el add-on drawing (visor Qt y backends)
+ifcopenshell==0.9.0        # IFC. Trae el kernel de geometria en el wheel de pip
+
+# Geometria
+shapely>=2.0               # areas, cierre de contornos, planta IFC
+numpy>=1.26                # mallas y transformaciones
+
+# Interfaz
+PySide6>=6.6               # Qt6. El visor DXF se deriva de ezdxf qtviewer
+
+# Precios
+httpx>=0.27                # HTTP con timeouts y reintentos
+selectolax>=0.3            # parseo HTML rapido, para las fuentes sin API
+
+# Datos
+SQLAlchemy>=2.0
+
+# Desarrollo
+pytest>=8.0

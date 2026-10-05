@@ -1,0 +1,28 @@
+# Entornos y caché de Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Empaquetado
+build/
+dist/
+*.spec
+
+# DATOS DE OBRA: nunca se commitean. Tienen información de comitentes.
+Presupuestos/
+*.obra
+
+# Bases de datos locales de la app
+*.db
+*.db-journal
+*.sqlite3
+
+# Salidas generadas al correr las herramientas
+planta_*.svg
+!ejemplos/**/planta_*.svg
+
+# Sistema
+.DS_Store
+Thumbs.db
