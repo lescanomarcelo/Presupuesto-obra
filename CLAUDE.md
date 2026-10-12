@@ -58,13 +58,26 @@ Medido sobre un plano real (`julian_sol.dxf`, AutoCAD 2018, 345 entidades):
 - **Puede no haber convención de capas.** En ese plano las 345 entidades están
   en la capa `0`. La asignación capa→ítem **no sirve sola**: hace falta una
   segunda vía de clasificación.
-- **Las otras vías de semántica, cuando no hay capas**: nombre de bloque
-  (`puerta 2` ×12, `BID_ bathroom_ wc03` ×5, y muebles a excluir como
-  `sillon 3 cuerpos`), patrón de hatch (`GRASS` es terreno, no piso) y firma
-  geométrica (cuatro polilíneas cerradas de 0,160 m² = pilares de 0,40×0,40).
-- **Los muros pueden ser `LINE` sueltas, no polilíneas.** 255 líneas, mediana
-  0,80. Medir longitud de muro exige emparejar las dos caras, que es bastante
-  más que recorrer vértices.
+- **La firma geométrica NO clasifica nada.** Lo probé: deduje que cuatro
+  polilíneas cerradas de 0,40 × 0,40 eran pilares, y el autor del plano confirmó
+  que son **accesorios** (mesas de luz). Un cuadrado de 0,40 puede ser un pilar o
+  un velador: el tamaño no dice nada. **No usar la geometría como clasificador.**
+- **Casi todo lo que la detección automática encuentra es mobiliario.** De
+  7 elementos detectados en un plano real, el autor identificó 5 como muebles
+  (2 camas, 1 bacha, 4 accesorios) y solo **1 era presupuestable**: un hatch de
+  13,14 m² de piso.
+- **`$EXTMIN`/`$EXTMAX` tampoco es confiable.** En ese plano el header declara
+  15,9 × 25,8, pero hay entidades a **2.500 unidades** de distancia que no cubre.
+  Calcular la extensión recorriendo la geometría, no leyéndola del header.
+- **Hay entidades basura fuera del plano, y se cuentan como obra.** Los 12
+  bloques `puerta 2` están **todos afuera** del área dibujada —el autor no los ve
+  en su plano— y se habrían presupuestado como 12 carpinterías. Regla:
+  **detectar el cúmulo principal de geometría y marcar lo que cae lejos.** En ese
+  plano, 255 `LINE` + 10 `INSERT` están juntas y **17 `INSERT` están lejos**.
+- **Los muros son `LINE` sueltas, no polilíneas.** 255 líneas, mediana 0,80, y la
+  detección automática **no encontró ni un muro**. Medir longitud exige
+  **emparejar las dos caras** de cada muro. Es la pieza más importante del lector
+  DXF, y el plan la había subestimado.
 
 ### Precios
 

@@ -33,10 +33,24 @@ Es el **peor caso** del plan y apareció en el primer archivo real:
 3. **Los muros son `LINE` sueltas**, no polilíneas: medir longitud exige
    emparejar las dos caras.
 
-Pero la semántica existe en otros canales: nombres de bloque (`puerta 2` ×12,
-`BID_ bathroom_ wc03` ×5, y muebles a excluir), patrones de hatch (`GRASS` 36,46
-m² es terreno, no piso) y firma geométrica (4 cerradas de 0,160 m² = pilares de
-0,40×0,40).
+Y lo que la detección encuentra es casi todo mobiliario. **El autor del plano
+identificó los 7 elementos detectados** y solo uno es presupuestable:
+
+| Marca | Detectado | Es |
+|---|---|---|
+| A | hatch `GRASS` 36,46 m² | Jardín |
+| **B** | **hatch `SOLID` 13,14 m²** | **Piso** ← el único presupuestable |
+| C1–C4 | 4 cerradas de 0,40 × 0,40 | Accesorios (mesas de luz), **no pilares** |
+| E1, E2 | cerradas de 4,00 y 2,80 m² | Camas |
+| E3 | cerrada de 0,60 m² | Bacha |
+| ○ | 12 bloques `puerta 2` | **fuera del plano**, el autor no los ve |
+
+4. **`$EXTMIN`/`$EXTMAX` está desactualizado**: declara 15,9 × 25,8 pero hay
+   entidades a 2.500 unidades. La arquitectura real son las 255 `LINE`, que miden
+   **14,46 × 25,81 m**. Hay **17 `INSERT` lejos del cúmulo principal** (las 12
+   puertas y 5 muebles) que se habrían presupuestado como obra.
+5. **La firma geométrica no sirve como clasificador**: un cuadrado de 0,40 puede
+   ser un pilar o un velador.
 
 ## Nota
 

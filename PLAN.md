@@ -89,26 +89,59 @@ las más largas (25,81 y 25,61) son el límite del lote. Medir longitud de muro
 exige **emparejar las dos caras** de cada muro, que es bastante más trabajo que
 recorrer vértices.
 
-### La semántica está, pero en otros canales
+### Le pregunté al autor del plano qué era cada cosa, y el resultado fue peor
 
-Lo importante: aunque las capas no sirvan, **el plano sí tiene información
-clasificable**, en tres vías que el plan no estaba usando como principales:
+Marqué en un dibujo los 7 elementos que la detección automática encontró y le
+pedí al autor que los identificara. **Cinco de los siete son muebles:**
 
-| Canal | Qué apareció | Para qué sirve |
+| Marca | Lo que detecté | Lo que **es** |
 |---|---|---|
-| **Nombre de bloque** | `puerta 2` ×12, `BID_ bathroom_ wc03` ×5, `MESA DE 4`, `sillon 3 cuerpos` | Conteo de carpinterías y artefactos, y **exclusión de muebles** |
-| **Patrón de hatch** | `GRASS` 36,46 m², `SOLID` 13,14 m² + 15 chicos | Áreas. `GRASS` es terreno, **no** piso |
-| **Firma geométrica** | 4 polilíneas cerradas de 0,160 m² (0,40 × 0,40) | Pilares |
+| A | hatch `GRASS` 36,46 m² | Jardín ✓ |
+| **B** | **hatch `SOLID` 13,14 m²** | **Piso** ✓ ← el único presupuestable |
+| C1–C4 | 4 cerradas de 0,40 × 0,40 — *"pilares"* | **Accesorios** (mesas de luz) ✗ |
+| E1 | cerrada de 4,00 m² | **Cama** ✗ |
+| E2 | cerrada de 2,80 m² | **Cama** ✗ |
+| E3 | cerrada de 0,60 m² | **Bacha** ✗ |
+| ○ | 12 bloques `puerta 2` | *"no los veo en el dibujo"* |
 
-Hay **24 hatches** y **7 polilíneas cerradas**, así que las áreas son medibles.
-Solo 2 polilíneas abiertas, y ninguna "casi cerrada", así que el problema de
-cierre por tolerancia no apareció en este archivo.
+**Tres conclusiones que corrigen el plan:**
 
-> **Consecuencia para el diseño:** la regla de asignación no puede llavearse solo
-> por capa. Tiene que aceptar **capa, nombre de bloque, patrón de hatch o firma
-> geométrica**, y la interfaz tiene que permitir **seleccionar sobre el plano**
-> cuando ninguno de esos canales alcanza. Es la misma medición asistida que ya
-> estaba decidida, pero el "asistida" pesa más de lo que el plan asumía.
+**1. La firma geométrica no clasifica nada.** Deduje que los cuadrados de
+0,40 × 0,40 eran pilares. Son veladores. Un cuadrado de 0,40 puede ser un pilar
+o una mesa de luz, y **el tamaño no distingue**. Queda descartada como canal.
+
+**2. Hay entidades basura fuera del plano que se habrían presupuestado.** El
+autor no veía las 12 puertas porque **están todas afuera del área dibujada**,
+algunas a 2.500 unidades de distancia. Se habrían computado como 12
+carpinterías inexistentes.
+
+> Y eso descubre **una segunda mentira del header**: `$EXTMIN`/`$EXTMAX` declara
+> 15,9 × 25,8, pero no cubre esas entidades. **La extensión hay que calcularla
+> recorriendo la geometría.**
+>
+> La regla que sale: **detectar el cúmulo principal y marcar lo que cae lejos.**
+> Acá, 255 `LINE` + 10 `INSERT` están juntas y **17 `INSERT` están lejos**. Es la
+> misma lógica que los atípicos de precios (§7): no descartar en silencio,
+> marcar y preguntar — pero acá la distancia **sí** es un discriminador fiable.
+
+**3. Lo que importa no se detectó.** La arquitectura real mide **14,46 × 25,81 m**
+y está dibujada con **255 líneas sueltas**. La mampostería —donde está la plata
+del presupuesto— **no apareció en ninguna detección**.
+
+### Lo que esto cambia en el diseño
+
+La detección automática, en un plano así, **aporta uno de siete**. Entonces el
+valor de la app no está en adivinar, sino en dos cosas concretas:
+
+- **El emparejador de muros**: detectar pares de líneas paralelas a distancia
+  constante y convertirlos en muros con longitud y espesor. Pasa de mejora a
+  **pieza central del lector DXF**.
+- **Una buena interfaz de selección**: agrupar por lo que sí es fiable —nombre de
+  bloque, patrón de hatch, capa cuando existe— y dejar que el usuario marque
+  grupos con un clic, incluido **"esto es mobiliario, ignorálo"**.
+
+El nombre de bloque sigue siendo útil, pero **como filtro de ruido más que como
+clasificador**: `sillon 3 cuerpos` y `MESA DE 4` se excluyen con certeza.
 
 ### IFC — probado, y es el camino más confiable de los tres
 Un IFC de Revit no tiene líneas: tiene **muros, losas y pisos como objetos**. Acá
