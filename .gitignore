@@ -26,3 +26,6 @@ planta_*.svg
 # Sistema
 .DS_Store
 Thumbs.db
+
+# Correcciones del configurador, al lado del DXF del comitente
+*.computo.json
