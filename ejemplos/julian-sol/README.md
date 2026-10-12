@@ -55,3 +55,21 @@ identificó los 7 elementos detectados** y solo uno es presupuestable:
 ## Nota
 
 Es un plano real. Si el repositorio se hace público, conviene sacarlo.
+
+## Detección de muros, calibrada contra el autor
+
+```
+python3 tools/detectar_muros.py ejemplos/julian-sol/julian_sol.dxf --svg muros.svg
+```
+
+| | Primera versión | Actual |
+|---|---|---|
+| Muros | 48 | **61** |
+| Largo total | 142,75 m | **157,94 m** |
+| Espesor 0,20 m | 17 muros, 91,49 m | 18 muros, 93,27 m |
+| Espesor 0,10 m | 16 muros, 23,15 m | 17 muros, 23,75 m |
+| Líneas duplicadas | no se veían | **9 descartadas** |
+| Sospechosos marcados | 9 | 7 |
+
+El autor verificó la primera corrida: **los 9 sospechosos eran falsos positivos**
+(un placard, el borde de una pileta), y **el muro de 25,61 m es perimetral real**.

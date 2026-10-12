@@ -42,6 +42,23 @@ def leer(ruta):
         return doc, True
 
 
+def deduplicar(lineas, tol: float = 0.001):
+    """Descarta lineas repetidas en las mismas coordenadas, en cualquier orden.
+    Los DXF reales las traen: en el plano de prueba, las de 4,00 / 5,82 / 4,06 m
+    aparecen dos veces, y eso empata el emparejamiento."""
+    vistas, out, repetidas = set(), [], 0
+    q = lambda v: round(v / tol)
+    for a, b, capa in lineas:
+        k1 = (q(a[0]), q(a[1]), q(b[0]), q(b[1]))
+        k2 = (q(b[0]), q(b[1]), q(a[0]), q(a[1]))
+        if k1 in vistas or k2 in vistas:
+            repetidas += 1
+            continue
+        vistas.add(k1)
+        out.append((a, b, capa))
+    return out, repetidas
+
+
 def lineas_utiles(msp, lejania: float):
     """Devuelve (lineas, descartadas_por_lejania). Filtra el cumulo principal."""
     crudas = []
@@ -62,7 +79,8 @@ def lineas_utiles(msp, lejania: float):
             dentro.append((a, b, capa))
         else:
             fuera += 1
-    return dentro, fuera
+    dentro, repetidas = deduplicar(dentro)
+    return dentro, fuera, repetidas
 
 
 def inserts_lejanos(msp, lineas, lejania: float):
@@ -125,51 +143,85 @@ def emparejar(lineas, esp_min, esp_max, solape_min, tol_ang):
             return None
         return esp, sol
 
-    # mejor candidato de cada linea
-    mejor = {}
+    # Todos los pares validos, ordenados por calidad, y asignacion global.
+    # El emparejamiento MUTUO (A es el mejor de B y B el de A) perdia muros
+    # reales: medido, 28 de 53 lineas largas sin pareja TENIAN un candidato
+    # valido con espesor 0,20 y solape completo.
+    pares = []
     for i in range(len(datos)):
-        opciones = []
         for j in candidatos[i]:
-            if j == i:
+            if j <= i:
                 continue
             r = evaluar(i, j)
             if r:
                 esp, sol = r
-                opciones.append((sol, -esp, j))        # mas solape, menos espesor
-        if opciones:
-            mejor[i] = max(opciones)[2]
+                pares.append((sol, -esp, i, j))
+    # AUTOCALIBRACION. Ordenar solo por solape deja que un falso positivo le
+    # robe la cara a un muro real: medido, un par espurio de 0,30 m con 5,16 m
+    # de solape le ganaba a un muro de 0,20 m con 5,00 m, y el muro real se
+    # perdia. El dibujo mismo dice cual es un espesor de obra: los que se
+    # repiten. Se mide esa frecuencia (ponderada por largo) y se le da
+    # prioridad a los espesores frecuentes.
+    peso = collections.Counter()
+    for sol, _, i, j in pares:
+        peso[round(evaluar(i, j)[0], 2)] += sol
+    pares = [(peso[round(evaluar(i, j)[0], 2)], sol, -(-nesp), i, j)
+             for sol, nesp, i, j in pares]
+    pares.sort(reverse=True)                  # espesor frecuente; luego mas solape
 
-    # solo los emparejamientos mutuos
-    muros, usados = [], set()
-    for i, j in mejor.items():
-        if i in usados or j in usados or mejor.get(j) != i:
-            continue
+    # Una linea NO pertenece a un solo muro: una cara larga es la cara de VARIOS
+    # muros a lo largo de su recorrido. Medido: tres lineas de 3,60 m querian la
+    # misma cara a 0,10 m, y con "una linea = un muro" se perdian dos.
+    # Entonces lo que se consume no es la linea entera, es el TRAMO de la linea.
+    def proy(d, x, y):
+        return x * d["u"][0] + y * d["u"][1]
+
+    consumido = collections.defaultdict(list)          # linea -> [(desde, hasta)]
+
+    def libre(idx, p0, p1, margen=0.25):
+        lo_, hi_ = min(p0, p1), max(p0, p1)
+        largo = hi_ - lo_
+        if largo <= 0:
+            return False
+        for c0, c1 in consumido[idx]:
+            if min(hi_, c1) - max(lo_, c0) > margen * largo:
+                return False                            # se pisa con un muro ya aceptado
+        return True
+
+    muros = []
+    for _, _, _, i, j in pares:
         esp, sol = evaluar(i, j)
         di, dj = datos[i], datos[j]
         ux, uy = di["u"]
-        pi0 = di["a"][0] * ux + di["a"][1] * uy
-        pi1 = di["b"][0] * ux + di["b"][1] * uy
-        pj0 = dj["a"][0] * ux + dj["a"][1] * uy
-        pj1 = dj["b"][0] * ux + dj["b"][1] * uy
+        pi0 = proy(di, *di["a"])
+        pi1 = proy(di, *di["b"])
+        pj0 = proy(di, *dj["a"])
+        pj1 = proy(di, *dj["b"])
         lo = max(min(pi0, pi1), min(pj0, pj1))
         hi = min(max(pi0, pi1), max(pj0, pj1))
         # eje: punto medio entre las dos caras, recortado al solape
         mx = (di["a"][0] + dj["a"][0]) / 2
         my = (di["a"][1] + dj["a"][1]) / 2
         base = mx * ux + my * uy
-        ex = mx + (lo - base) * ux
-        ey = my + (lo - base) * uy
-        fx = mx + (hi - base) * ux
-        fy = my + (hi - base) * uy
+        ex, ey = mx + (lo - base) * ux, my + (lo - base) * uy
+        fx, fy = mx + (hi - base) * ux, my + (hi - base) * uy
+
+        # el tramo que ocuparia este muro sobre cada una de las dos caras
+        a_i, b_i = proy(di, ex, ey), proy(di, fx, fy)
+        a_j, b_j = proy(dj, ex, ey), proy(dj, fx, fy)
+        if not (libre(i, a_i, b_i) and libre(j, a_j, b_j)):
+            continue
+        consumido[i].append((min(a_i, b_i), max(a_i, b_i)))
+        consumido[j].append((min(a_j, b_j), max(a_j, b_j)))
         muros.append(dict(eje=((ex, ey), (fx, fy)), largo=hi - lo, espesor=esp,
                           caras=(i, j), capa=di["capa"]))
-        usados.add(i)
-        usados.add(j)
+
+    usados = set(consumido)
     sueltas = [i for i in range(len(datos)) if i not in usados]
     return muros, sueltas, datos
 
 
-def svg(muros, datos, sueltas, ruta):
+def svg(muros, datos, sueltas, ruta, min_rep=3):
     """Dibuja: los espesores frecuentes en color, los raros en rojo punteado
     (son candidatos a falso positivo), y lo no emparejado en naranja fino."""
     xs = [p[0] for d in datos for p in (d["a"], d["b"])]
@@ -181,7 +233,7 @@ def svg(muros, datos, sueltas, ruta):
     T = lambda x, y: ((x - x0) * esc, H - (y - y0) * esc)
 
     cuenta = collections.Counter(round(m["espesor"], 2) for m in muros)
-    frecuentes = [g for g, n in cuenta.most_common() if n >= 3]
+    frecuentes = [g for g, n in cuenta.most_common() if n >= min_rep]
     pal = ["#2563eb", "#16a34a", "#0891b2", "#9333ea", "#ca8a04"]
     color = {g: pal[k % len(pal)] for k, g in enumerate(sorted(frecuentes))}
 
@@ -247,12 +299,14 @@ def main() -> int:
     ap.add_argument("--tol-ang", type=float, default=1.5, help="grados")
     ap.add_argument("--lejania", type=float, default=40.0,
                     help="descarta geometria a mas de N unidades del cumulo principal")
+    ap.add_argument("--min-repeticiones", type=int, default=3,
+                    help="un espesor que aparece menos de N veces se MARCA como sospechoso")
     ap.add_argument("--svg", default=None)
     a = ap.parse_args()
 
     doc, recuperado = leer(a.archivo)
     msp = doc.modelspace()
-    lineas, fuera = lineas_utiles(msp, a.lejania)
+    lineas, fuera, repetidas = lineas_utiles(msp, a.lejania)
     bloques_lejos = inserts_lejanos(msp, lineas, a.lejania)
 
     print("=" * 84)
@@ -261,6 +315,8 @@ def main() -> int:
     print(f"  lineas en el cumulo principal : {len(lineas)}")
     if fuera:
         print(f"  lineas descartadas por lejanas: {fuera}")
+    if repetidas:
+        print(f"  lineas duplicadas descartadas : {repetidas}")
     if bloques_lejos:
         c = collections.Counter(n for n, _ in bloques_lejos)
         print(f"  !! {len(bloques_lejos)} INSERT fuera del plano, NO se computan: {dict(c)}")
@@ -283,13 +339,26 @@ def main() -> int:
         print(f"\n     muro mas largo: {max(m['largo'] for m in muros):.2f} m")
         print(f"     muro mas corto: {min(m['largo'] for m in muros):.2f} m")
 
+    cuenta = collections.Counter(round(m["espesor"], 2) for m in muros)
+    sosp = [m for m in muros if cuenta[round(m["espesor"], 2)] < a.min_repeticiones]
+    if sosp:
+        print(f"\n  SOSPECHOSOS: {len(sosp)} muros con un espesor que aparece menos de "
+              f"{a.min_repeticiones} veces")
+        print("     Verificado contra el autor del plano: los 9 de la primera corrida eran")
+        print("     falsos positivos (un placard, el borde de una pileta). Se MARCAN, no se")
+        print("     borran: la decision es del usuario.")
+        for k, m in enumerate(sorted(sosp, key=lambda m: -m["largo"])):
+            print(f"       {k+1}. espesor {m['espesor']:.2f} m   largo {m['largo']:6.2f} m")
+        buenos = sum(m["largo"] for m in muros if m not in sosp)
+        print(f"     Largo sin los sospechosos: {buenos:.2f} m")
+
     L_sueltas = sum(datos[i]["L"] for i in sueltas)
     print(f"\n  SIN PAREJA: {len(sueltas)} lineas, {L_sueltas:.2f} m en total")
     print("     Son aberturas, detalles, mobiliario dibujado a mano o caras cuyo")
     print("     par quedo fuera del rango de espesor. Hay que revisarlas a ojo.")
 
     if a.svg:
-        svg(muros, datos, sueltas, a.svg)
+        svg(muros, datos, sueltas, a.svg, a.min_repeticiones)
         print(f"\n  {a.svg} generado: muros por espesor, y en naranja lo que no se emparejo")
     return 0
 

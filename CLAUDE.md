@@ -74,6 +74,23 @@ Medido sobre un plano real (`julian_sol.dxf`, AutoCAD 2018, 345 entidades):
   en su plano— y se habrían presupuestado como 12 carpinterías. Regla:
   **detectar el cúmulo principal de geometría y marcar lo que cae lejos.** En ese
   plano, 255 `LINE` + 10 `INSERT` están juntas y **17 `INSERT` están lejos**.
+- **Emparejar caras: lo que se reserva es el TRAMO, no la línea.** Una cara larga
+  es cara de varios muros a lo largo de su recorrido. Y el emparejamiento
+  **mutuo** (A es el mejor de B y B el de A) pierde muros reales: medido, 28 de
+  53 líneas largas sin pareja tenían candidato válido con espesor 0,20 y solape
+  completo. Hay que hacer asignación **global** por calidad.
+- **Autocalibrar el espesor por frecuencia.** Si se ordena solo por solape, un
+  par espurio de 0,30 m con 5,16 m le gana a un muro real de 0,20 m con 5,00 m y
+  el muro real se pierde. El dibujo dice cuál es un espesor de obra: el que se
+  repite. Ponderar por frecuencia antes de asignar.
+- **Los DXF traen líneas duplicadas.** 9 en el plano de prueba, en las mismas
+  coordenadas. Empatan el emparejamiento. Deduplicar antes.
+- **Cuidado con los tramos colineales de una misma cara.** Dos líneas al mismo
+  offset y del mismo lado no son dos muros: son dos pedazos de la misma cara, y
+  emparejar el segundo **duplica metros** (verificado: 5 m de perímetro).
+- **Un espesor que aparece menos de 3 veces es falso positivo.** Acertó 9 de 9
+  contra el autor del plano: un placard, el borde de una pileta. Se **marca**, no
+  se descarta. **El largo no discrimina**: el muro más largo (25,61 m) es real.
 - **Los muros son `LINE` sueltas, no polilíneas.** 255 líneas, mediana 0,80, y la
   detección automática **no encontró ni un muro**. Medir longitud exige
   **emparejar las dos caras** de cada muro. Es la pieza más importante del lector
