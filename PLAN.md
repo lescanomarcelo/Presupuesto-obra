@@ -128,34 +128,70 @@ carpinterías inexistentes.
 y está dibujada con **255 líneas sueltas**. La mampostería —donde está la plata
 del presupuesto— **no apareció en ninguna detección**.
 
-### Lo que esto cambia en el diseño
+### Lo que esto cambia en el diseño: el configurador de cómputo
 
-La detección automática, en un plano así, **aporta uno de siete**. Entonces el
-valor de la app no está en adivinar, sino en dos cosas concretas:
+Después de cuatro iteraciones del detector de muros —cada arreglo destapando el
+siguiente— el autor del plano planteó el cambio de enfoque correcto:
 
-- **El emparejador de muros**: detectar pares de líneas paralelas a distancia
-  constante y convertirlos en muros con longitud y espesor. Pasa de mejora a
-  **pieza central del lector DXF**.
-- **Una buena interfaz de selección**: agrupar por lo que sí es fiable —nombre de
-  bloque, patrón de hatch, capa cuando existe— y dejar que el usuario marque
-  grupos con un clic, incluido **"esto es mobiliario, ignorálo"**.
+> *"Antes de seguir adivinando, ¿no sería mejor que haya un configurador? El
+> programa le devuelve un dibujo, y el usuario agrega o quita cosas. Agrega el
+> muro que falta, borra las zonas rojas, y pone qué es: muro 0,20, por ejemplo."*
 
-El nombre de bloque sigue siendo útil, pero **como filtro de ruido más que como
-clasificador**: `sillon 3 cuerpos` y `MESA DE 4` se excluyen con certeza.
+**Se adopta.** La evidencia de todo este proyecto lo respalda: cada vez que una
+heurística y el usuario no coincidieron, tenía razón el usuario. Identificó 5
+muebles que la detección daba por presupuestables, corrigió unos "pilares" que
+eran veladores, y acertó 9 de 9 en los falsos positivos de espesor.
 
-### IFC — probado, y es el camino más confiable de los tres
-Un IFC de Revit no tiene líneas: tiene **muros, losas y pisos como objetos**. Acá
-el cómputo no se mide, **se lee**.
+### El cambio de métrica
 
-**Lo probé primero con modelos sintéticos** (`tools/prueba_ifc.py`) y después
-**con un modelo real de Revit 2023** —una vivienda de estructura de madera, 5,6 MB,
-24.108 entidades, 2.245 elementos— con `tools/analizar_ifc.py`. El modelo real
-cambió la conclusión, así que conviene leer las dos partes.
+Lo importante no es cuánto detecta la app, es **cuántas correcciones le cuestan
+al usuario**. En el plano de prueba el detector encontró 61 muros y 157,94 m. Si
+el usuario tiene que agregar 4 y borrar 7, son **11 acciones en vez de dibujar
+61 muros**. Esa es la métrica que vale.
 
-Hay dos caminos:
+> **El detector deja de ser una autoridad y pasa a ser un primer borrador.** Su
+> trabajo no es acertar: es que corregir sea más barato que empezar de cero.
 
-| | Qué hace | Resultado medido |
-|---|---|---|
+### Cómo funciona
+
+Una pantalla con el plano a la izquierda y lo detectado a la derecha, agrupado.
+
+**Sobre un grupo** (los 18 muros de 0,20 m, los 24 hatches, los bloques `puerta`):
+aceptar todo, descartar todo, o asignarle un ítem del catálogo. Un clic resuelve
+decenas de elementos.
+
+**Sobre un elemento**: aceptar, descartar, o corregirle el espesor.
+
+**Agregar lo que falta**: dibujar un muro con dos clics sobre el plano, tomando
+el espesor de un grupo existente o escribiéndolo.
+
+**Etiquetar**: "esto es *Mampostería 0,20*" vincula el grupo al ítem del catálogo,
+y de ahí sale el cómputo.
+
+### Lo que se guarda, que es lo que más vale
+
+- **Las correcciones**, ligadas al handle de la entidad, para que reabrir el plano
+  no pierda el trabajo.
+- **El perfil de detección**: las reglas que surgieron de las correcciones
+  —espesor 0,20 → *Mampostería 0,20*; descartar los de 0,30— reutilizables en el
+  próximo plano del mismo dibujante.
+
+Es la misma idea del `perfil_asignacion` de §5, extendida: antes guardaba
+"capa → ítem", ahora guarda también "espesor → ítem" y "esto se descarta".
+**El segundo plano del mismo estudio arranca mucho mejor que el primero**, y ese
+es el verdadero puente a la extracción automática.
+
+### Consecuencias
+
+- **Las etapas 1 y 5 se fusionan.** El visor DXF y la asignación capa→ítem eran
+  dos cosas; con el configurador son una sola pantalla.
+- **Necesita Qt, así que necesita máquina local.** El detector se puede seguir
+  afinando sin pantalla, pero el configurador no se puede ni probar en un
+  contenedor. Es el argumento más fuerte que apareció para mover el desarrollo.
+- **Deja de tener sentido seguir afinando el detector a ciegas.** Alcanza con que
+  deje un borrador razonable; el resto lo cierra el configurador.
+
+---|---|---|
 | Leer las `BaseQuantities` que exportó Revit | Devuelve `{Length, NetVolume, NetSideArea…}` | **No siempre confiable (ver abajo)** |
 | Calcular desde la geometría del sólido | Volumen del mallado | **Exacto, y siempre disponible** |
 

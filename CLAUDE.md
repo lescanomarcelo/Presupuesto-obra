@@ -91,6 +91,10 @@ Medido sobre un plano real (`julian_sol.dxf`, AutoCAD 2018, 345 entidades):
 - **Un espesor que aparece menos de 3 veces es falso positivo.** Acertó 9 de 9
   contra el autor del plano: un placard, el borde de una pileta. Se **marca**, no
   se descarta. **El largo no discrimina**: el muro más largo (25,61 m) es real.
+- **El detector es un borrador, no una autoridad.** Cuatro iteraciones de
+  heurísticas no alcanzaron: faltan muros y sobra el borde de una pileta. Cada
+  vez que la heurística y el usuario no coincidieron, tenía razón el usuario. No
+  seguir afinando a ciegas: lo cierra el configurador (§3 del plan).
 - **Los muros son `LINE` sueltas, no polilíneas.** 255 líneas, mediana 0,80, y la
   detección automática **no encontró ni un muro**. Medir longitud exige
   **emparejar las dos caras** de cada muro. Es la pieza más importante del lector
@@ -137,7 +141,7 @@ Medido sobre un plano real (`julian_sol.dxf`, AutoCAD 2018, 345 entidades):
 | Plataforma | Escritorio, **solo Windows**. PyInstaller + Inno Setup |
 | Stack | Python 3.12 + **PySide6**. `ezdxf` 1.4.x, `ifcopenshell` 0.9.0, `shapely`, SQLite |
 | Entrada | DXF e **IFC son los dos de primera clase**. DWG pide exportar a DXF |
-| Medición | **Asistida**: la app mide, el usuario confirma qué es cada cosa |
+| Medición | **Configurador**: la app propone un borrador y el usuario agrega, quita y etiqueta sobre el plano. La métrica es **cuántas correcciones cuesta**, no cuánto detecta |
 | Precios | Scraping/API, con **tres niveles de fuente**: AUTOMÁTICA, HTML, LINK |
 | Organización | **Una carpeta por obra**, visible en el explorador |
 | Moneda | Pesos, con total en USD al **oficial** (`dolarapi.com`) |
