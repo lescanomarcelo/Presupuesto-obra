@@ -60,10 +60,55 @@ ahí; encima le agregamos selección y medición.
 
 ## 3. Los tres formatos de plano
 
-### DXF — prioridad 1, es el camino real
+### DXF — probado con un plano real, y confirmó el peor caso
 Formato abierto. `ezdxf` lo lee nativamente (R12 a R2018) y tiene
-`recover.readfile()` para archivos corruptos, que en la práctica son muchos. Todo
-el motor de medición se desarrolla contra DXF.
+`recover.readfile()` para archivos corruptos.
+
+**Lo probé** (`tools/analizar_dxf.py`) contra `julian_sol.dxf`, AutoCAD 2018,
+345 entidades. Los tres riesgos que el plan marcaba como altos aparecieron los
+tres, y uno de forma inesperada:
+
+**1. El header miente sobre las unidades.** Declara `$INSUNITS = 4`
+(milímetros) en un dibujo que está en **metros**: la extensión es 15,90 × 25,81
+y las cotas leen 1,80 / 0,80 / 1,00 / 3,10. En milímetros el plano mediría
+1,6 cm.
+
+> **Las cotas son la fuente de verdad.** `DIMENSION.get_measurement()` devuelve
+> el valor geométrico, y una puerta de 0,80 lo confirma sin ambigüedad. Eso
+> permite **detectar las unidades automáticamente** en vez de pedir calibración
+> manual, que era lo que el plan proponía. La calibración por dos puntos queda
+> como respaldo, no como paso obligatorio.
+
+**2. No hay convención de capas: las 345 entidades están en la capa `0`.** La
+asignación capa→ítem, que era el centro de la interfaz de medición, **no sirve en
+este archivo**. Y no es un caso raro: es lo que pasa cuando el plano lo dibujó
+alguien sin norma de capas, que es la mitad de los planos.
+
+**3. Los muros son `LINE` sueltas, no polilíneas.** 255 líneas, mediana 0,80, y
+las más largas (25,81 y 25,61) son el límite del lote. Medir longitud de muro
+exige **emparejar las dos caras** de cada muro, que es bastante más trabajo que
+recorrer vértices.
+
+### La semántica está, pero en otros canales
+
+Lo importante: aunque las capas no sirvan, **el plano sí tiene información
+clasificable**, en tres vías que el plan no estaba usando como principales:
+
+| Canal | Qué apareció | Para qué sirve |
+|---|---|---|
+| **Nombre de bloque** | `puerta 2` ×12, `BID_ bathroom_ wc03` ×5, `MESA DE 4`, `sillon 3 cuerpos` | Conteo de carpinterías y artefactos, y **exclusión de muebles** |
+| **Patrón de hatch** | `GRASS` 36,46 m², `SOLID` 13,14 m² + 15 chicos | Áreas. `GRASS` es terreno, **no** piso |
+| **Firma geométrica** | 4 polilíneas cerradas de 0,160 m² (0,40 × 0,40) | Pilares |
+
+Hay **24 hatches** y **7 polilíneas cerradas**, así que las áreas son medibles.
+Solo 2 polilíneas abiertas, y ninguna "casi cerrada", así que el problema de
+cierre por tolerancia no apareció en este archivo.
+
+> **Consecuencia para el diseño:** la regla de asignación no puede llavearse solo
+> por capa. Tiene que aceptar **capa, nombre de bloque, patrón de hatch o firma
+> geométrica**, y la interfaz tiene que permitir **seleccionar sobre el plano**
+> cuando ninguno de esos canales alcanza. Es la misma medición asistida que ya
+> estaba decidida, pero el "asistida" pesa más de lo que el plan asumía.
 
 ### IFC — probado, y es el camino más confiable de los tres
 Un IFC de Revit no tiene líneas: tiene **muros, losas y pisos como objetos**. Acá

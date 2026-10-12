@@ -46,6 +46,26 @@ entre paréntesis es el error medido si se ignora la regla.
 - Al leer el Qto para el control, aceptar **`NetVolume` o `GrossVolume`**: faltan
   265 `NetVolume` de 1.383 pilares.
 
+### DXF
+
+Medido sobre un plano real (`julian_sol.dxf`, AutoCAD 2018, 345 entidades):
+
+- **No confiar en `$INSUNITS`.** Declaraba `4` (milímetros) en un dibujo que está
+  en **metros**: la extensión es 15,90 × 25,81 y las cotas leen 1,80 / 0,80 /
+  3,10. Las **cotas (`DIMENSION`) son la fuente de verdad** para resolver
+  unidades: `get_measurement()` devuelve el valor geométrico, y una puerta de
+  0,80 lo confirma.
+- **Puede no haber convención de capas.** En ese plano las 345 entidades están
+  en la capa `0`. La asignación capa→ítem **no sirve sola**: hace falta una
+  segunda vía de clasificación.
+- **Las otras vías de semántica, cuando no hay capas**: nombre de bloque
+  (`puerta 2` ×12, `BID_ bathroom_ wc03` ×5, y muebles a excluir como
+  `sillon 3 cuerpos`), patrón de hatch (`GRASS` es terreno, no piso) y firma
+  geométrica (cuatro polilíneas cerradas de 0,160 m² = pilares de 0,40×0,40).
+- **Los muros pueden ser `LINE` sueltas, no polilíneas.** 255 líneas, mediana
+  0,80. Medir longitud de muro exige emparejar las dos caras, que es bastante
+  más que recorrer vértices.
+
 ### Precios
 
 - **Neto = `Price / (1 + IVA)`, siempre y para toda fuente.** NO usar
